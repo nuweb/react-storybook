@@ -897,14 +897,22 @@ Project managers can track v1 completion as "Phases 0-9 green". Phase 10 (Nx) is
 
 ---
 
-## 14. Acceptance Criteria (v1 -- matches spec in the request)
+## 14. Acceptance Criteria
+
+### v1 (phases -1 through 9)
 
 1. **Schema Definition System** -- Authoring a Zod schema with `ui()` metadata renders a working, validated form. TS types flow from schema to `onSubmit`.
-2. **Form Engine Abstraction** -- `SchemaForm` supports `engine="tanstack"` and `engine="rhf"` with identical observable behavior (contract tests green). No field component imports from either library.
+2. **Form Engine Abstraction (single engine + seam)** -- `SchemaForm` renders on TanStack Form. Field components import from neither form library directly; they consume only the `FieldBinding` contract. The `FormEngine` interface is in place so a second adapter can be added without changing field components.
 3. **Layout Renderer** -- Forms adapt responsively across `xs/sm/md/lg`. Author layout overrides are honored; missing fields fall through to a warning + append. No CSS authored outside tokens + MUI theme.
 4. **Field Registry** -- All shipped field types render. Unknown types produce the `FallbackField` with warning log. Consumers can register custom types.
-5. **Live Demo Dashboard** -- Four schemas, two engines, engine-switching preserves values, `StatePreview` + `ValidationPanel` reflect state in real time.
+5. **Live Demo Dashboard** -- Four schemas, `StatePreview` + `ValidationPanel` reflect state in real time. (No engine toggle in v1; that ships in v1.1.)
 6. **Edge cases** -- All entries in Section 8 covered by unit or story tests.
+
+### v1.1 (phases 11-13)
+
+7. **Two-engine parity** -- `SchemaForm` supports `engine="tanstack"` and `engine="rhf"` with identical observable behavior (contract tests green).
+8. **Engine switcher** -- `useEngineSwitcher` preserves values across engines mid-edit.
+9. **Advanced meta** -- `asyncValidate`, `dependsOn`, `hidden`, `readOnly`, `clearOnHide` all documented and tested.
 
 ---
 
@@ -971,10 +979,413 @@ framework/
 
 contracts/                 ← consumer-authored schemas (4 demo schemas)
 
-demo/                      ← dashboard + comparison pages
+demo/                      ← dashboard (comparison page ships in v1.1)
 ```
 
 This is the complete plan. Execution follows the phases in Section 13; every phase ends with runnable artifacts and green tests, so progress is observable without a final big-bang integration.
+
+---
+
+## 19. Backend Coordination Contract
+
+Schema-driven forms only deliver on "single source of truth" if the **schema itself** is shared with the backend. This section is the brief for server developers: what they need to deliver and what timing works.
+
+Share this section (or a copy) with the backend team before framework Phase 2 merges.
+
+### 19.1 What we need from the backend, ranked by value
+
+| # | Deliverable | Required by | Consumed by |
+|---|---|---|---|
+| 1 | **OpenAPI 3.1 spec** (JSON or YAML) at a stable URL, versioned with the backend release | Phase 0 (app-level); unblocks client code-gen | `orval` / `openapi-typescript` in `libs/shared/data-access` |
+| 2 | **Field-level validation rules** expressed in OpenAPI (`minLength`, `maxLength`, `pattern`, `format`, `enum`, `minimum`, `maximum`, `required`) | Phase 2 | Zod schema generation (see 19.4) |
+| 3 | **Semantic `format` hints** on string fields (`email`, `uri`, `date`, `date-time`, `uuid`, `tel`) | Phase 2 | `ui.type` inference |
+| 4 | **Unique-value endpoints** for async validation (`GET /api/users/check-email?value=...` → `{ taken: boolean }`) | Phase 13 (v1.1) | `asyncValidate` helpers |
+| 5 | **Error response contract** -- when a write fails validation server-side, return `422` with a body matching the shape below (19.5) | Phase 6 | Form-level + field-level error surfacing |
+| 6 | **Enum sources** for dynamic option lists (countries, roles, tags) exposed as `GET /api/enums/{name}` returning `[{ value, label }]` | Phase 4 | `SelectField` / `RadioGroupField` `options` |
+| 7 | **Idempotency key support** on write endpoints (accept `Idempotency-Key` header) | Phase 6 | Safe retries on submit |
+| 8 | **CORS + preflight for PATCH / DELETE** in all non-prod environments | Phase 0 | Needed for MSW-backed mock UX |
+
+Items 1-3 are blocking for the framework. Items 5 and 7 block a good submission UX. Items 4, 6, and 8 are deferrable but should be on the backlog.
+
+### 19.2 OpenAPI conventions we rely on
+
+Give server developers a short rule sheet so the spec they produce generates the schemas we want:
+
+- Use **OpenAPI 3.1**, not 3.0 (3.1 aligns with JSON Schema Draft 2020-12, which Zod tooling converts most faithfully).
+- Prefer `type: string, format: <semantic>` over ad-hoc patterns when a format exists (`email`, `uuid`, `uri`, `date-time`, `date`, `time`, `ipv4`, `ipv6`). We key `ui.type` off format.
+- For closed choice sets, use `enum`. We render as `select` by default.
+- For open tag-like fields, use `type: array, items: { type: string }` -- we render as a chip input.
+- Mark required fields in the parent's `required: []` array -- this is the source of truth for `z.optional()`.
+- Use `x-ui` extensions (explicitly allowed by OpenAPI) for UI hints that don't map to validation:
+
+  ```yaml
+  properties:
+    bio:
+      type: string
+      maxLength: 500
+      x-ui:
+        type: textarea
+        helperText: "Short bio shown on your profile"
+        col: { xs: 12 }
+  ```
+
+  Our code-gen reads `x-ui` and emits `ui({ … })` automatically. This is optional -- forms still render without it.
+- Describe error responses with `application/problem+json` (RFC 9457) so our error surfacing has a single shape to parse.
+
+### 19.3 The request-to-us to the backend team
+
+A short message the frontend team can send, verbatim:
+
+> **Subject:** Dependencies for the schema-driven forms project
+>
+> We are starting a schema-driven UI framework that generates React forms from Zod schemas. To avoid divergence between UI validation and server validation, we want to generate both from your OpenAPI spec. We need the following from you, ideally before we land framework Phase 2:
+>
+> 1. An OpenAPI 3.1 spec published at a stable URL (e.g., `https://api.example.com/openapi.json`), versioned with each deploy.
+> 2. Complete field-level validation: `minLength`, `maxLength`, `pattern`, `format`, `enum`, `minimum`, `maximum`, and the parent `required` array.
+> 3. Semantic `format` hints on string fields wherever applicable (`email`, `uuid`, `date`, etc.).
+> 4. Error responses with status `422` on validation failures, body shape per RFC 9457 (`application/problem+json`) with a `errors: [{ path, code, message }]` array for per-field failures.
+> 5. (Deferred, needed only for async uniqueness checks) Endpoints like `GET /api/users/check-email?value=...` returning `{ taken: boolean }`.
+> 6. (Deferred) `Idempotency-Key` header support on write endpoints.
+>
+> We'll own: generating the TypeScript client, generating the base Zod schemas from your spec, writing `ui()` metadata on top, and rendering forms. You own: the spec staying accurate every deploy.
+>
+> We do **not** need you to change your server code in response to our UI; the schema is the contract, and we generate from it.
+
+### 19.4 OpenAPI → Zod pipeline (frontend side, not a backend ask)
+
+The frontend is responsible for converting the server's spec into Zod. Two tools do most of the work:
+
+```bash
+# Install once in libs/shared/data-access
+npm install -D openapi-zod-client
+```
+
+```jsonc
+// libs/shared/data-access/openapi-zod.config.json
+{
+  "input": "./openapi.json",
+  "output": "./src/schemas/generated/",
+  "distribution": "schemas-only",
+  "withDescription": true,
+  "exportAllNamedSchemas": true
+}
+```
+
+```bash
+npx openapi-zod-client  # regenerate on every backend release
+```
+
+Output: one file per operation with `z.object({ … })` schemas. We then **extend** these with `ui()` metadata in a hand-written sibling file:
+
+```ts
+// libs/shared/data-access/src/schemas/signup.ts
+import { Signup as GeneratedSignup } from './generated/signup.gen'
+import { ui } from '@ibc/schema-forms'
+
+export const SignupSchema = GeneratedSignup.extend({
+  email:    ui(GeneratedSignup.shape.email,    { label: 'Email',   col: { xs: 12, md: 6 } }),
+  password: ui(GeneratedSignup.shape.password, { label: 'Password', col: { xs: 12, md: 6 } }),
+})
+```
+
+Generated schemas give us validation parity with the server for free. The `ui()` overlay adds the UI metadata the server doesn't care about.
+
+### 19.5 Server validation error contract
+
+Server-side 422 responses use RFC 9457 with a tiny extension for per-field errors:
+
+```json
+{
+  "type": "https://api.example.com/errors/validation",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "One or more fields are invalid.",
+  "errors": [
+    { "path": "email", "code": "already_taken", "message": "That email is already in use." },
+    { "path": "password", "code": "too_weak", "message": "Password must contain a number." }
+  ]
+}
+```
+
+The framework's `SchemaForm` submit wrapper parses this shape and pipes errors into the right places:
+
+- Each `errors[i].path` → `FormHandle.errors[path]` (the matching field shows the error inline).
+- Any error without a matching field falls through to the form-level `errors['']` and renders as an `Alert` above the form.
+- `type` + `detail` are logged via the app logger for observability.
+
+If the backend cannot adopt RFC 9457, the framework ships an adapter: `<SchemaForm errorAdapter={myAdapter} …>` receives the raw response and returns the same normalized shape. We prefer RFC 9457 so consumers don't write adapters per API.
+
+### 19.6 Who owns what -- a coordination table
+
+| Concern | Backend owns | Frontend owns |
+|---|---|---|
+| Field validation rules (min, max, pattern, enum, required) | Yes -- publish in OpenAPI | Consumes via codegen |
+| Error shape on failed writes | Yes -- RFC 9457 `problem+json` | Parses and surfaces |
+| Enum values for dynamic options | Yes -- expose `/api/enums/{name}` | Fetches and passes to `SelectField` |
+| Async uniqueness endpoints | Yes -- `GET /check-*` endpoints | Calls via `asyncValidate` |
+| UI labels, helper text, layout | No | `ui()` metadata on generated schemas |
+| Field visibility rules | Mixed -- server enforces at submit; UI hides early via `dependsOn` | `dependsOn` in `ui()` |
+| Breaking schema changes | Yes -- version the spec; increment the MUI X-style major | Consumes the new spec; migrate forms in a single PR |
+
+### 19.7 Versioning the contract
+
+The OpenAPI spec should be versioned alongside backend releases. Two rules keep forms stable:
+
+1. **Adding a field is non-breaking.** The frontend's generated schema gets a new field with default `ui()` behavior; existing forms either ignore it or pick it up on rebuild.
+2. **Removing / renaming a field is breaking.** Must go through a deprecation window: backend marks field `deprecated: true` in OpenAPI for one release, then removes it. The frontend tracks `deprecated: true` and logs dev-mode warnings when a form still references it.
+
+Backend releases that introduce breaking changes bump the `info.version` major and optionally move to a new base path (e.g., `/api/v2/`). The frontend bumps its `openapi.json` snapshot and regenerates schemas in a single PR.
+
+---
+
+## 20. MSW Cookbook for Schema-Driven Forms
+
+MSW (Mock Service Worker) lets us develop forms against realistic API responses without waiting for the backend. This section is a step-by-step recipe tailored to the schema-driven form pipeline -- not a generic MSW primer.
+
+### 20.1 What MSW covers in this project
+
+- **Dev server** -- `npm run dev` starts the app against mocked endpoints until the real backend is available.
+- **Storybook** -- every form story renders with its own handler set, so edge cases (server errors, slow responses, validation failures) are single-click reproducible.
+- **Vitest** -- unit and integration tests use the same handlers as Storybook, guaranteeing parity.
+
+### 20.2 One-time setup
+
+```bash
+npm install -D msw
+npx msw init public/ --save
+```
+
+Creates `public/mockServiceWorker.js` and registers it in `package.json`. Commit both. Never modify the generated worker by hand.
+
+### 20.3 File layout
+
+```
+src/
+  mocks/
+    handlers/
+      users.ts           # per-domain handler files
+      auth.ts
+      enums.ts
+    fixtures/
+      users.ts           # reusable seed data
+    helpers/
+      fromZodSchema.ts   # generate fixtures from a Zod schema
+      problemJson.ts     # RFC 9457 helpers
+    browser.ts           # setupWorker() for dev + Storybook
+    server.ts            # setupServer() for Vitest
+    index.ts             # combined handlers export
+```
+
+Keep handlers **per domain**, not per story. Per-story overrides go in the story file via `parameters.msw`.
+
+### 20.4 Handler that validates with our own Zod schema
+
+This is the key move: the mock parses the request body with the **same Zod schema the form uses**. If the form's validation passes but the mock rejects, we know the schema is incomplete (or the form is skipping a rule). If both accept, we have full-stack confidence from the schema alone.
+
+```ts
+// src/mocks/handlers/users.ts
+import { http, HttpResponse } from 'msw'
+import { z } from 'zod'
+import { CreateUserSchema } from '@ibc/shared/data-access/schemas/user'
+import { problemJson, fieldErrors } from '../helpers/problemJson'
+
+export const userHandlers = [
+  http.post('/api/users', async ({ request }) => {
+    const body = await request.json()
+    const parsed = CreateUserSchema.safeParse(body)
+
+    if (!parsed.success) {
+      return problemJson(422, {
+        title: 'Validation failed',
+        detail: 'One or more fields are invalid.',
+        errors: fieldErrors(parsed.error),
+      })
+    }
+
+    // Simulate server-side uniqueness check
+    if (parsed.data.email === 'taken@example.com') {
+      return problemJson(422, {
+        title: 'Email already in use',
+        errors: [{ path: 'email', code: 'already_taken', message: 'That email is already in use.' }],
+      })
+    }
+
+    return HttpResponse.json(
+      { id: crypto.randomUUID(), ...parsed.data },
+      { status: 201 },
+    )
+  }),
+
+  http.get('/api/users/check-email', ({ request }) => {
+    const url = new URL(request.url)
+    const value = url.searchParams.get('value')
+    return HttpResponse.json({ taken: value === 'taken@example.com' })
+  }),
+]
+```
+
+### 20.5 RFC 9457 helper
+
+```ts
+// src/mocks/helpers/problemJson.ts
+import { HttpResponse } from 'msw'
+import type { ZodError } from 'zod'
+
+export function problemJson(
+  status: number,
+  body: { title: string; detail?: string; errors?: Array<{ path: string; code: string; message: string }> },
+) {
+  return HttpResponse.json(
+    {
+      type: `https://api.example.com/errors/${status}`,
+      status,
+      ...body,
+    },
+    { status, headers: { 'Content-Type': 'application/problem+json' } },
+  )
+}
+
+export function fieldErrors(error: ZodError) {
+  return error.errors.map((e) => ({
+    path: e.path.join('.'),
+    code: e.code,
+    message: e.message,
+  }))
+}
+```
+
+### 20.6 Generating realistic fixtures from the same Zod schema
+
+For GET endpoints, seed data from the schema rather than hand-rolling objects. This keeps mocks in sync when the schema changes.
+
+```ts
+// src/mocks/helpers/fromZodSchema.ts
+import { z } from 'zod'
+import { generateMock } from '@anatine/zod-mock'   // npm install -D @anatine/zod-mock
+
+export function seedFrom<T extends z.ZodTypeAny>(schema: T, count = 1): z.infer<T>[] {
+  return Array.from({ length: count }, () => generateMock(schema))
+}
+```
+
+```ts
+// src/mocks/handlers/users.ts
+import { UserSchema } from '@ibc/shared/data-access/schemas/user'
+import { seedFrom } from '../helpers/fromZodSchema'
+
+const SEED_USERS = seedFrom(UserSchema, 25)
+
+http.get('/api/users', () => HttpResponse.json(SEED_USERS))
+```
+
+### 20.7 Per-story handler overrides
+
+For Storybook stories that need a specific backend state (empty list, server error, slow response), override handlers via `parameters.msw`:
+
+```tsx
+// src/framework/renderer/SchemaForm.stories.tsx
+export const ShowsServerValidationError: Story = {
+  args: { schema: SignupSchema, onSubmit: realSubmit },
+  parameters: {
+    msw: {
+      handlers: [
+        http.post('/api/users', () =>
+          problemJson(422, {
+            title: 'Validation failed',
+            errors: [{ path: 'email', code: 'already_taken', message: 'That email is already in use.' }],
+          }),
+        ),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.type(canvas.getByLabelText('Email'), 'new@example.com')
+    await userEvent.type(canvas.getByLabelText('Password'), 'longpassword')
+    await userEvent.click(canvas.getByRole('button', { name: /submit/i }))
+    await expect(canvas.getByText('That email is already in use.')).toBeVisible()
+  },
+}
+```
+
+This is the canonical way to prove each edge case in Section 8 without a real backend.
+
+### 20.8 Dev and Storybook wiring
+
+```ts
+// src/mocks/browser.ts
+import { setupWorker } from 'msw/browser'
+import { userHandlers } from './handlers/users'
+import { authHandlers } from './handlers/auth'
+import { enumHandlers } from './handlers/enums'
+
+export const worker = setupWorker(...userHandlers, ...authHandlers, ...enumHandlers)
+```
+
+```ts
+// src/main.tsx
+async function bootstrap() {
+  if (import.meta.env.DEV) {
+    const { worker } = await import('./mocks/browser')
+    await worker.start({ onUnhandledRequest: 'bypass' })
+  }
+  ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
+}
+bootstrap()
+```
+
+```ts
+// .storybook/preview.ts
+import { initialize, mswLoader } from 'msw-storybook-addon'
+import { userHandlers, authHandlers, enumHandlers } from '../src/mocks'
+
+initialize({ onUnhandledRequest: 'bypass' })
+
+const preview: Preview = {
+  loaders: [mswLoader],
+  parameters: {
+    msw: { handlers: [...userHandlers, ...authHandlers, ...enumHandlers] },
+  },
+}
+export default preview
+```
+
+```ts
+// vitest.setup.ts
+import { server } from './src/mocks/server'
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))  // loud in tests
+afterEach(() => server.resetHandlers())
+afterAll(() => server.close())
+```
+
+Three environments, one handler source, one Zod schema. That's the payoff.
+
+### 20.9 Pattern catalog -- the five mocks every form needs
+
+Every new form ships with Storybook stories covering these five states, each backed by a small MSW override. Juniors copy the template rather than invent from scratch:
+
+| State | Why it matters | MSW handler |
+|---|---|---|
+| **Happy path** | Valid submit → 201 | Default handler from `handlers/` |
+| **Server validation error (per-field)** | `422` with `errors[].path` surfaces inline | `problemJson(422, { errors: [{ path: 'email', … }] })` |
+| **Server validation error (form-level)** | `422` without a path → `errors['']` alert | `problemJson(422, { title: 'Your session expired.' })` |
+| **Network / 500** | `ErrorBoundary` or retry surfaces | `HttpResponse.error()` or `problemJson(500, …)` |
+| **Slow response** | Submit button shows loading; double-submit prevented | `await delay(2000)` before response |
+
+Put a story per state in every form's `*.stories.tsx` file. Phase 6's exit gate should require these five; the template can live in `src/framework/testing/mockSchemas.ts`.
+
+### 20.10 When the real backend arrives
+
+MSW handlers are a development convenience, not a fork of the app. The transition from mocks to real backend is:
+
+1. Backend publishes the OpenAPI spec at a stable URL.
+2. Frontend runs `openapi-zod-client` → generated schemas replace the hand-written ones.
+3. MSW handlers stay put. They still parse incoming requests with the *same* Zod schemas the real server validates against, so mocks and server validate identically.
+4. `import.meta.env.DEV` check in `main.tsx` keeps MSW enabled locally; production bundles exclude it.
+5. As endpoints go live, remove their MSW handlers one at a time. Handlers are dev-only helpers, not architecture -- deleting them does not risk production code.
+
+The framework's schema-first architecture makes this transition cheap: validation logic lives in Zod, Zod is generated from OpenAPI, and MSW uses the same Zod. Forms don't care whether the response came from MSW or the live backend.
 
 ---
 
