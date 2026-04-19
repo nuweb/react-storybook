@@ -1368,3 +1368,112 @@ Because the single-package scaffold mirrors the lib's internal folder layout (co
 - [ ] A consumer app can `import { SchemaForm } from '@ibc/schema-forms'` and `import { tanstackEngine } from '@ibc/schema-forms/engines/tanstack'` with zero barrel imports.
 - [ ] Installing only one of the two form engines in the app still builds (peer meta `optional: true`).
 - [ ] `nx graph` shows `ibc-schema-forms` as a shared node depended on by shell/agent/demo apps, with no inbound edges from scope-specific libs.
+
+---
+
+## Appendix C -- MUI v9 Compatibility and Upgrade Path
+
+Short answer: **yes, the design is compatible with MUI v9**, and the plan is structured so the upgrade from v6/v7 to v9 is a contained migration rather than a rewrite. This appendix covers what changes, what stays, and the concrete steps.
+
+### C.1 What MUI v9 actually ships (the parts that touch this framework)
+
+MUI v9 (released April 8, 2026, re-synchronized with MUI X v9) is primarily a polish + breaking-deprecation release. The items that intersect our design:
+
+| v9 change | Impact on schema-forms |
+|---|---|
+| Removal of deprecated `component` and `componentsProps` props across the library | Low. Our field wrappers don't use these -- they use `slots` + `slotProps` or the `as` prop on polymorphic helpers. Audit needed in Phase 4 review. |
+| Removal of deprecated system props from layout components | Low. We use Grid v2 (`size={…}`) and `sx`, both supported. |
+| `disableEscapeKeyDown` removed from `Dialog` / `Modal` | None. Framework doesn't own Dialog/Modal; if consumers wrap us in one, it's their call. |
+| New `NumberField` primitive from Base UI | **Opportunity**. When on v9, our default `NumberField` should wrap MUI's new `NumberField` (better a11y + keyboard handling). v6/v7 path keeps using our `TextField type="number"` wrapper. |
+| New `Menubar` | Not used by the framework. Available to consumers if they build custom page chrome. |
+| CSS variables + `color-mix()` derived colors | Neutral-positive. Our theme bridge already enables `cssVariables: true`; derived colors work automatically when consumers upgrade. |
+| `TableCell` border `color-mix` + `nativeColor` + `cssVariables` interaction fix | None for the framework itself. |
+| Autocomplete `root` slot + full slots for indicators | Positive. If we ever add a combobox field, we'll use the new slot API. Not in v1 scope. |
+| Roving TabIndex across Stepper / Tabs / MenuList | Positive. Our `SelectField` and `RadioGroupField` benefit automatically. |
+| `aria-hidden` removed from `Backdrop` by default | None for the framework. |
+| Theme typing: `MuiTouchRipple` removed | Check theme augmentation in `tokens/mui-theme.ts`; we don't override `MuiTouchRipple` so we are clean. |
+| Bundle size ~3% smaller; `sx` up to 30% faster in heavy usage | Free win. |
+| Future: Emotion dependency will be removed ("What's next" section of v9 blog) | **Track**. When Emotion is dropped in a post-v9 minor, our install instructions change (drop `@emotion/react`, `@emotion/styled` peer deps). Non-breaking to our API. |
+
+Nothing in v9 changes the mental model or the public API of `SchemaForm`, `ui()`, or the field registry. It's our field-component internals + peer-dep declarations that move.
+
+### C.2 Why the design absorbs this cleanly
+
+Three choices in Sections 5-7 make version churn absorbable:
+
+1. **We don't re-export MUI components.** Every default field is a *wrapper* around MUI primitives. Consumers import `TextField` from `@ibc/schema-forms/fields`, not `@mui/material`. A major MUI bump touches ~10 files in `src/framework/fields/*`, not the consuming app's 400 call-sites.
+2. **Styling is theme + `sx`, never `@mui/system` layout props.** The deprecated system layout props (the thing v9 removes) are not used anywhere in the framework. Consumers who follow the skill's rules are also safe.
+3. **The `FieldBinding` contract is MUI-free.** `{ value, onChange, onBlur, error, name }` is a plain shape. Swapping the rendering layer (for example, replacing MUI with Joy or Base UI directly in v1.2) doesn't touch the engine adapters, the compile step, or the registry.
+
+### C.3 Version matrix
+
+Commit to supporting a window, not a point release:
+
+| MUI line | React | Zod | TanStack Form | Framework status |
+|---|---|---|---|---|
+| v6.x | 18.x | 3.x | 0.x - 1.x | v1 ships here |
+| v7.x | 18.x or 19.x | 3.x | 1.x | Supported (minor audit) |
+| v9.x | 19.x | 3.x or 4.x | 1.x | **Supported via v1.1 minor**; adds optional `NumberField` Base UI backend |
+
+Skip v8 entirely -- MUI itself did (v7 → v9 to align with MUI X). The React 19 move coincides with MUI v9 and is addressed in Appendix D-like future work if and when the consuming apps are ready.
+
+### C.4 Peer-dep declaration (forward-compatible)
+
+In `libs/ibc/schema-forms/package.json` (Appendix B.4), widen the MUI peer range so consumers can upgrade without our explicit release:
+
+```jsonc
+{
+  "peerDependencies": {
+    "react":         ">=18.0.0 <20.0.0",
+    "react-dom":     ">=18.0.0 <20.0.0",
+    "@mui/material": ">=6.0.0 <10.0.0",
+    "@emotion/react":   ">=11.0.0 <13.0.0",
+    "@emotion/styled":  ">=11.0.0 <13.0.0",
+    "zod":              ">=3.22.0 <5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@emotion/react":   { "optional": true },
+    "@emotion/styled":  { "optional": true },
+    "@tanstack/react-form":    { "optional": true },
+    "@tanstack/zod-form-adapter": { "optional": true },
+    "react-hook-form": { "optional": true },
+    "@hookform/resolvers": { "optional": true }
+  }
+}
+```
+
+Emotion is *optional* in the v9+ world (MUI has signaled it will remove the hard dependency), so we mark it optional now. On v6/v7 installs, npm will warn if it's missing; that's the correct behavior because on v6/v7 Emotion is still required.
+
+### C.5 What to audit when v9 upgrade happens (checklist)
+
+Treat the upgrade as a single PR guarded by the existing test suite (unit + Storybook play functions + a11y addon):
+
+- [ ] Bump `@mui/material`, `@mui/system`, `@mui/icons-material` to v9.
+- [ ] Run MUI's codemods: `npx @mui/codemod@latest v9.0.0/preset-safe src/framework/fields`.
+- [ ] Grep `src/framework/fields/**` for `component=`, `componentsProps=` -- replace with `slots` + `slotProps`. These should already be absent if Phase 4 was implemented to the skill.
+- [ ] Grep `src/framework/**` for deprecated system layout props (`display=`, `alignItems=`, `justifyContent=`, etc. applied directly to `<Box>` / `<Grid>`). Move to `sx`.
+- [ ] Check `tokens/mui-theme.ts` for any `MuiTouchRipple` theme overrides -- remove (removed from theme types in v9).
+- [ ] Re-run Storybook + a11y addon across the full story set. Zero new violations.
+- [ ] Re-run Vitest unit tests. All snapshots still match or are intentionally updated.
+- [ ] (v9-only enhancement, optional) Refactor `NumberField/NumberField.tsx` to wrap MUI's new `NumberField` primitive. Behind a feature flag or behind a `peerDependencies` check -- ship only when the consumer is on v9+.
+- [ ] Update `docs/schema-forms-quickstart.md` install command if Emotion drop has happened.
+
+If the checklist is green, the upgrade is done. Expected size: a few files + a codemod pass, not a redesign.
+
+### C.6 Where the plan would have to change if MUI v9 had been a bigger break
+
+For completeness, here's what *would* have forced a design change -- none of which happened:
+
+- If MUI had dropped CSS variables support → our theme bridge (Section 5) would need rewrite. **It didn't; variables are now the preferred path.**
+- If Grid v2 had been deprecated → `LayoutRenderer` would need to migrate to `Stack` + manual breakpoints. **It wasn't.**
+- If the `sx` prop had been removed → our per-field `componentProps` would lose its main escape hatch. **It wasn't; sx got 30% faster.**
+- If MUI had adopted a different React form-control signature → our `FieldBinding` adapter in each field wrapper would need updates. **It didn't.**
+
+The design absorbs MUI v9 because the v9 release is evolutionary. If a future major were revolutionary, the affected surface is still limited to `src/framework/fields/*` and `tokens/mui-theme.ts` -- engines, compile, registry, renderer, and the public API stay fixed.
+
+### C.7 Summary
+
+- **v1 ships on MUI v6 (or v7).** Works unchanged on v9 after a small audit + codemod PR.
+- **The framework's public API does not change with MUI version.** Consumers' call-sites are isolated by our field wrappers.
+- **Upgrading is one PR, not a project.** Peer ranges are wide, Emotion is optional, and the test suite catches regressions.
+- **v9-only goodies (NumberField Base UI primitive, improved Roving TabIndex) land automatically or behind a tiny optional refactor.**
