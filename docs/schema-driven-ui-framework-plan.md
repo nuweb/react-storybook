@@ -762,3 +762,255 @@ demo/                      ← dashboard + comparison pages
 ```
 
 This is the complete plan. Execution follows the phases in Section 13; every phase ends with runnable artifacts and green tests, so progress is observable without a final big-bang integration.
+
+---
+
+## Appendix A -- Packaging as an Nx Library
+
+Short answer: **yes**, and by design. The folder layout in Section 3 was chosen so that promotion into an Nx workspace is a move + config operation, not a rewrite. This appendix specifies exactly how.
+
+### A.1 Target monorepo layout
+
+Assuming the enterprise layout from `.cursor/skills/frontend-architecture/SKILL.md` (scope-first, type-tagged):
+
+```
+apps/
+  shell/                               # consumer app that renders forms
+  demo/                                # optional: the live dashboard from Section 10
+
+libs/
+  ibc/
+    schema-forms/                      # ← the framework lives here
+      src/
+        lib/
+          core/                        # compile, meta, registry, types, errors
+          engines/
+            tanstack/
+            rhf/
+            switcher.ts
+          renderer/
+          fields/                      # MUI-backed default field set
+          hooks/
+          testing/
+        index.ts                       # public surface, no sub-barrels
+      .storybook/                      # library-scoped Storybook (Section A.6)
+      project.json
+      package.json                     # exports map (Section A.4)
+      vite.config.ts                   # buildable library config
+      README.md
+    ui/                                # existing atomic design system (optional, separate lib)
+
+  shared/
+    tokens/                            # design tokens + MUI theme (dependency)
+    data-access/                       # optional: Zod schemas for API + forms (dependency)
+```
+
+The library name is `@ibc/schema-forms` (tag it `type:ui, scope:shared`). It depends on `@ibc/tokens` (for the MUI theme bridge) and peer-depends on `react`, `@mui/material`, `zod`, and optionally `@tanstack/react-form` / `react-hook-form`. Consumer apps install whichever engine(s) they use.
+
+### A.2 Generate the library
+
+```bash
+# Scaffold a buildable React library inside the scope-first tree
+nx g @nx/react:library libs/ibc/schema-forms \
+  --bundler=vite \
+  --unitTestRunner=vitest \
+  --buildable \
+  --importPath=@ibc/schema-forms \
+  --tags="type:ui,scope:shared" \
+  --component=false \
+  --directory=libs/ibc/schema-forms
+```
+
+Flags that matter:
+
+- `--bundler=vite` aligns with the rest of the stack and produces an ESM-first output with type declarations.
+- `--buildable` creates a `build` target. Use `--publishable --importPath=@ibc/schema-forms` instead if you plan to publish to npm or a private registry.
+- `--component=false` suppresses the default `<SchemaForms>` stub -- the framework exposes `<SchemaForm>` from its own folder.
+- `--tags` are enforced by `@nx/enforce-module-boundaries` so apps can import the library only when their scope permits.
+
+### A.3 `project.json` targets
+
+```jsonc
+{
+  "name": "ibc-schema-forms",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/ibc/schema-forms/src",
+  "projectType": "library",
+  "tags": ["type:ui", "scope:shared"],
+  "targets": {
+    "build": {
+      "executor": "@nx/vite:build",
+      "options": {
+        "outputPath": "dist/libs/ibc/schema-forms",
+        "main": "libs/ibc/schema-forms/src/index.ts",
+        "tsConfig": "libs/ibc/schema-forms/tsconfig.lib.json",
+        "assets": ["libs/ibc/schema-forms/*.md"]
+      }
+    },
+    "lint":   { "executor": "@nx/eslint:lint" },
+    "test":   { "executor": "@nx/vite:test",
+                "options": { "config": "libs/ibc/schema-forms/vite.config.ts" } },
+    "storybook": {
+      "executor": "@nx/storybook:storybook",
+      "options": { "port": 6007, "configDir": "libs/ibc/schema-forms/.storybook" }
+    },
+    "build-storybook": {
+      "executor": "@nx/storybook:build",
+      "options": { "outputDir": "dist/storybook/ibc-schema-forms",
+                   "configDir": "libs/ibc/schema-forms/.storybook" }
+    },
+    "typecheck": { "executor": "nx:run-commands",
+                   "options": { "command": "tsc -p libs/ibc/schema-forms/tsconfig.lib.json --noEmit" } }
+  }
+}
+```
+
+### A.4 `package.json` exports (granular, no barrels)
+
+Per Section 1 of the architecture skill, expose specific entry points instead of a single barrel. This keeps tree-shaking intact even though the library ships both engines and the full default field set:
+
+```jsonc
+{
+  "name": "@ibc/schema-forms",
+  "version": "0.1.0",
+  "sideEffects": false,
+  "type": "module",
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "@mui/material": "^6.0.0",
+    "@emotion/react": "^11.0.0",
+    "@emotion/styled": "^11.0.0",
+    "zod": "^3.22.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-form": { "optional": true },
+    "@tanstack/zod-form-adapter": { "optional": true },
+    "react-hook-form": { "optional": true },
+    "@hookform/resolvers": { "optional": true }
+  },
+  "exports": {
+    ".":                  "./src/index.ts",                       // <SchemaForm>, types, default registry
+    "./core":             "./src/lib/core/index.ts",              // compile, ui(), errors, types
+    "./registry":         "./src/lib/core/registry.ts",
+    "./engines/tanstack": "./src/lib/engines/tanstack/index.ts",  // opt-in
+    "./engines/rhf":      "./src/lib/engines/rhf/index.ts",       // opt-in
+    "./fields":           "./src/lib/fields/index.ts",            // default MUI fields
+    "./testing":          "./src/lib/testing/index.ts"            // renderWithProviders, mock schemas
+  }
+}
+```
+
+Consumers pull what they need:
+
+```ts
+import { SchemaForm, ui } from '@ibc/schema-forms'
+import { tanstackEngine } from '@ibc/schema-forms/engines/tanstack'
+import { MyBrandedTextField } from '@ibc/schema-forms/fields'
+```
+
+The two engines are behind their own subpath exports so if an app only installs `@tanstack/react-form` it never pulls `react-hook-form` into its bundle, and vice versa. The `peerDependenciesMeta` block marks both engines optional so `npm install @ibc/schema-forms` does not warn when only one is installed.
+
+### A.5 Module boundary tags
+
+Add these constraints to `eslint.config.mjs` (the skill already defines the structure; `schema-forms` slots in under `type:ui, scope:shared`):
+
+```ts
+{ sourceTag: 'type:ui', onlyDependOnLibsWithTags: ['type:ui', 'type:util'] },
+{ sourceTag: 'scope:shared', onlyDependOnLibsWithTags: ['scope:shared'] },
+```
+
+Consequences:
+
+- `@ibc/schema-forms` may import `@ibc/tokens` (`scope:shared, type:util`) but **not** from any `scope:shell` or `scope:agent` lib. This keeps the framework genuinely shared.
+- Apps of any scope may depend on it, because apps have `type:app` which dep-constraints allow to consume shared `type:ui` libs.
+- `@ibc/schema-forms` may import `@ibc/ui` (the atomic design system) if you want shared atoms as the fallback for custom field components. Keep that dep one-way and optional.
+
+### A.6 Library-scoped Storybook
+
+Each library gets its own Storybook instance (the skill endorses Storybook composition across the monorepo):
+
+```
+libs/ibc/schema-forms/.storybook/
+  main.ts       # stories glob: '../src/**/*.stories.@(ts|tsx)'
+  preview.ts    # imports @ibc/tokens CSS + MUI ThemeProvider + MSW loader
+  theme.ts
+```
+
+Root workspace `.storybook/main.ts` composes library Storybooks via `refs`, so `nx storybook shell` opens a combined UI showing `ibc/ui` + `ibc/schema-forms` + feature Storybooks.
+
+Run isolated during development:
+
+```bash
+nx storybook ibc-schema-forms         # port 6007
+nx run ibc-schema-forms:test          # vitest watch
+nx run ibc-schema-forms:build         # emit dist/
+```
+
+### A.7 Publishable vs. buildable
+
+Pick one up front; switching later is a small config change but noisy in git.
+
+| Mode | When to use | Effect |
+|------|-------------|--------|
+| **Buildable** | Monorepo-only consumption. Apps import via TS path alias; Nx caches the build output. | `nx build ibc-schema-forms` produces `dist/libs/ibc/schema-forms` used by app bundlers during dev and build. No version bumps. |
+| **Publishable** | Cross-repo or open-sourcing. | Same as buildable, plus `release` target wiring (nx release / changesets) that publishes `@ibc/schema-forms` to a registry with semver versioning and a CHANGELOG. |
+
+Start buildable. If a second repo needs it, promote to publishable with `nx g @nx/react:library ... --publishable --importPath=@ibc/schema-forms` applied as a patch to `package.json` + add `nx release` config.
+
+### A.8 Consumer wiring (app side)
+
+In the consuming app (`apps/shell`), installation is transparent because Nx links the workspace package:
+
+```tsx
+// apps/shell/src/pages/SignupPage.tsx
+import { SchemaForm } from '@ibc/schema-forms'
+import { SignupSchema } from '@ibc/shared/data-access/schemas/signup'
+
+export function SignupPage() {
+  return (
+    <SchemaForm
+      schema={SignupSchema}
+      engine="tanstack"
+      onSubmit={async (values) => api.signup(values)}
+    />
+  )
+}
+```
+
+`@ibc/shared/data-access` hosts the Zod schemas that back both forms (via `@ibc/schema-forms`) and API response validation (via `@ibc/shared/data-access`). Section 8 of the skill already enforces this "one schema, shared for form + API" pattern; `schema-forms` just consumes whatever schemas live there.
+
+### A.9 Affected graph
+
+Because the library is a first-class Nx project, the affected graph reacts correctly:
+
+- A change in `libs/ibc/schema-forms/src/lib/core/compile.ts` invalidates `ibc-schema-forms`, any app importing it (`shell`, `agent`, `demo`), and every feature library that transitively depends on those apps.
+- `nx affected -t lint test build` in CI runs only those projects.
+- `nx graph` renders `ibc-schema-forms` as a node with edges to `ibc-tokens`, `shared-data-access`, and downstream consumers.
+
+### A.10 Migration from the single-package scaffold
+
+If Phase 0-8 of Section 13 have already been executed in the current single-package repo and you later want to promote the code into an Nx monorepo:
+
+1. `npx create-nx-workspace@latest ibc --preset=apps` in a sibling directory.
+2. `nx g @nx/react:library libs/ibc/schema-forms --importPath=@ibc/schema-forms --buildable --bundler=vite --unitTestRunner=vitest --tags=type:ui,scope:shared --component=false`.
+3. Move `src/framework/*` → `libs/ibc/schema-forms/src/lib/*` (one-to-one; no restructuring required).
+4. Update relative imports: inside the lib use relative paths; across libs use `@ibc/*` path aliases from `tsconfig.base.json`.
+5. Copy `src/framework/*.stories.tsx` in place; wire the library Storybook from Section A.6.
+6. Port `src/demo/*` to `apps/demo/src/` (or fold into `apps/shell` as a showcase route).
+7. Convert the `SignupSchema` / `ProfileSchema` etc. to live in `libs/shared/data-access/schemas/` so both forms and APIs consume them.
+8. Update `package.json` exports per Section A.4.
+9. Add tags + boundary constraints; run `nx lint` and fix violations until clean.
+10. `nx affected -t lint test build storybook` green → done.
+
+Because the single-package scaffold mirrors the lib's internal folder layout (core/engines/renderer/fields/hooks/testing), step 3 is a `git mv` tree, not a rewrite. No import paths above the `framework/` boundary need to change: `@/framework/*` becomes `@ibc/schema-forms`.
+
+### A.11 Acceptance checklist for the Nx packaging
+
+- [ ] `nx build ibc-schema-forms` emits a tree-shakeable ESM dist with `.d.ts` files.
+- [ ] `nx test ibc-schema-forms` runs unit + engine-parity contract tests green.
+- [ ] `nx storybook ibc-schema-forms` serves stories on :6007 with a11y addon clean.
+- [ ] `nx lint ibc-schema-forms` passes with module-boundary constraints active.
+- [ ] A consumer app can `import { SchemaForm } from '@ibc/schema-forms'` and `import { tanstackEngine } from '@ibc/schema-forms/engines/tanstack'` with zero barrel imports.
+- [ ] Installing only one of the two form engines in the app still builds (peer meta `optional: true`).
+- [ ] `nx graph` shows `ibc-schema-forms` as a shared node depended on by shell/agent/demo apps, with no inbound edges from scope-specific libs.
