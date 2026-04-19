@@ -623,67 +623,251 @@ Cover the demo dashboard: pick schema → fill fields → validation states → 
 
 ## 13. Phased Delivery
 
-Each phase ends with a runnable artifact and all tests green.
+Execution is broken into small, sequential phases. Each phase is sized to fit in a single PR, ends with a runnable artifact, and has a clear entry gate (what must be true before starting) and exit gate (what must be true before merging). Phases in **v1** are required; phases marked **v1.1** are deferred per the simplicity review in Appendix A.
+
+### Map of phases
+
+| # | Phase | Release | Depends on | Rough size |
+|---|-------|---------|------------|------------|
+| 0 | Foundations (deps, theme, test runner) | v1 | -- | Small |
+| 1 | Core types + `ui()` helper | v1 | 0 | Small |
+| 2 | `compile()` (schema → FormSpec) | v1 | 1 | Medium |
+| 3 | Field registry + FallbackField | v1 | 1 | Small |
+| 4 | Default field components (flat types) | v1 | 0, 3 | Medium |
+| 5 | TanStack engine adapter | v1 | 2 | Medium |
+| 6 | `SchemaForm` + `LayoutRenderer` + `FieldRenderer` | v1 | 2, 3, 4, 5 | Medium |
+| 7 | Nested (`ObjectField`) and arrays (`ArrayField`) | v1 | 6 | Medium |
+| 8 | Demo dashboard (one page, 4 schemas, state + validation panels) | v1 | 6, 7 | Small |
+| 9 | Polish: error boundaries, form-level errors, docs, quickstart | v1 | 6, 7, 8 | Small |
+| 10 | Nx promotion (Appendix B) | v1 or later | 9 | Medium |
+| 11 | RHF adapter + parity contract tests | **v1.1** | 5, 6 | Medium |
+| 12 | Engine switcher + comparison page | **v1.1** | 11 | Small |
+| 13 | Advanced meta: `asyncValidate`, `dependsOn`, `hidden`, `readOnly` | **v1.1** | 6 | Medium |
+
+Phases 0-9 in order give a junior dev a shippable v1. Phase 10 (Nx promotion) can happen at any time from 9 onward.
 
 ### Phase 0 -- Foundations
-- Add dependencies (Section 11).
-- Configure Vitest + jsdom + RTL + `@testing-library/jest-dom`.
-- Add MUI theme bridging existing design tokens (`src/tokens/design-tokens.css`) via `createTheme({ cssVariables: true })`.
-- Wire `ThemeProvider` + `CssBaseline` in `src/main.tsx` and in `.storybook/preview.ts`.
 
-**Done when:** `npm test` runs; MUI theme renders in Storybook; existing stories unaffected.
+*Outcome:* the repo is ready to build schema-driven forms.
 
-### Phase 1 -- Core + compile + registry
-- Implement `core/types.ts`, `core/meta.ts`, `core/compile.ts`, `core/registry.ts`, `core/errors.ts`.
-- Unit tests for all four.
+- Entry gate: the existing app still runs (`npm run dev`, `npm run storybook`).
+- Add dependencies from Section 11 (Zod, MUI, Emotion, TanStack Form + zod adapter, motion; dev: Vitest, jsdom, Testing Library, MSW).
+- Configure Vitest with jsdom + `@testing-library/jest-dom` matchers. One smoke test file that imports React and asserts `1 + 1 === 2`.
+- Create `src/framework/tokens/mui-theme.ts` bridging `src/tokens/design-tokens.css` into `createTheme({ cssVariables: true })`.
+- Wrap `src/main.tsx` with `<ThemeProvider theme={theme}><CssBaseline />…</ThemeProvider>`.
+- Wrap Storybook via `.storybook/preview.ts` using `withThemeFromJSXProvider`.
+- Exit gate:
+  - `npm test` runs and passes the smoke test.
+  - `npm run dev` and `npm run storybook` still work.
+  - MUI Button renders with tokens-derived palette in a throwaway story.
+- PR contents: `package.json` diff, `vitest.config.ts`, `src/framework/tokens/mui-theme.ts`, theme provider wiring, one smoke test, one temporary Storybook check.
 
-**Done when:** `compile(SignupSchema)` returns a correct `FormSpec` snapshot; registry tests pass.
+### Phase 1 -- Core types and `ui()` helper
 
-### Phase 2 -- Default field components
-- Ship `TextField`, `NumberField`, `SelectField`, `CheckboxField`, `SwitchField`, `RadioGroupField`, `DateField`, `TextareaField` as MUI wrappers consuming `FieldBinding`.
-- Each gets a Storybook story with `Default` + error + disabled + async-loading variants.
+*Outcome:* a schema author can attach UI metadata to any Zod node.
 
-**Done when:** All stories render; a11y addon reports zero violations.
+- Entry gate: Phase 0 merged.
+- Create `src/framework/core/types.ts` with `FieldMeta`, `FieldSpec`, `FormSpec`, `LayoutNode`, `ResponsiveCol`, `FieldType` (v1 meta = `type`, `label`, `helperText`, `placeholder`, `options`, `col`, `componentProps`).
+- Create `src/framework/core/meta.ts` exporting `ui<T extends z.ZodTypeAny>(schema: T, meta: FieldMeta): T`. Serializes meta as JSON into `schema.describe(...)`.
+- Create `src/framework/core/errors.ts` with a single exported `SchemaFormError extends Error` class that carries `{ path: string }`.
+- Unit tests in `src/framework/core/__tests__/meta.test.ts`:
+  - `ui()` round-trips meta through `.optional()`, `.nullable()`, `.default()`, `.describe()`.
+  - Malformed envelopes throw `SchemaFormError` with the path.
+- Exit gate: `npm test` green; no renderer or engine code yet.
+- PR contents: the four files above plus one test file.
 
-### Phase 3 -- TanStack engine + SchemaForm + LayoutRenderer
-- Implement `TanStackEngine`.
-- Implement `SchemaForm`, `LayoutRenderer`, `FieldRenderer`, `FallbackField`.
-- Ship `signup.schema.ts` + a `Default` SchemaForm story.
+### Phase 2 -- `compile()` (schema → FormSpec)
 
-**Done when:** The signup form renders, validates live, submits successfully, and shows errors inline. Engine capabilities populated.
+*Outcome:* any Zod schema can be normalized to a `FormSpec` the renderer will consume.
 
-### Phase 4 -- Nested + array fields
-- Implement `ObjectField` and `ArrayField`.
-- Ship `profile.schema.ts` and `survey.schema.ts` + stories.
-- Add depth-limit compile tests.
+- Entry gate: Phase 1 merged.
+- Create `src/framework/core/compile.ts` exporting `compile(schema): FormSpec`.
+- Implementation rules (from Section 4.3):
+  - Walk the Zod tree once; build `fields` map keyed by dot-path, `order`, `defaults`, `validators.byField`, `validators.whole`.
+  - Infer `type` from Zod node if meta doesn't set it (`ZodString`→`text`, `ZodNumber`→`number`, `ZodBoolean`→`checkbox`, `ZodEnum`→`select`, `ZodArray`→`array`, `ZodObject`→`object`, `ZodDate`→`date`, literal `true`→`checkbox`).
+  - Derive `label` from field name (camel→Title Case) if meta omits it.
+  - Default `col` to `{ xs: 12 }`.
+  - Enforce depth limit of 5 -- throw `SchemaFormError`.
+  - Default layout = one row per field in author order.
+- Memoize via `WeakMap` keyed on the schema reference.
+- Unit tests in `src/framework/core/__tests__/compile.test.ts`:
+  - Flat schema snapshot.
+  - Inference covers every Zod node type.
+  - Nested object depth produces correct paths (`address.city`).
+  - Array produces correct paths (`hobbies[0].name`).
+  - Depth > 5 throws.
+  - Missing meta falls back to defaults.
+- Exit gate: snapshot tests green for flat + nested + array schemas.
+- PR contents: `compile.ts` + tests + a `__fixtures__/` folder of small schemas.
 
-**Done when:** Deeply nested and dynamic-array forms work end to end on TanStack.
+### Phase 3 -- Field registry and FallbackField
 
-### Phase 5 -- RHF engine
-- Implement `RHFEngine` against the same interface.
-- Add contract tests that run both engines over the same fixtures.
+*Outcome:* the renderer has a lookup mechanism for field types and a graceful fallback for unknown ones.
 
-**Done when:** All contract tests pass for both engines.
+- Entry gate: Phase 1 merged (can run in parallel with Phase 2).
+- Create `src/framework/core/registry.ts` with `createDefaultRegistry()`, `FieldRegistry` type, and `extend()` helper.
+- Registry is seeded empty for now; Phase 4 will populate it.
+- Create `src/framework/renderer/FallbackField.tsx` -- an MUI `Alert` (severity `warning`) + generic `TextField` wired to `binding.value` / `binding.onChange`. In dev, logs via `console.warn`.
+- Unit tests:
+  - `get(type)` returns registered component; returns `undefined` for unknown.
+  - `extend()` does not mutate the base registry.
+- Storybook: one story for `FallbackField` showing an unknown-type warning.
+- Exit gate: tests green; fallback renders in Storybook.
 
-### Phase 6 -- Engine switcher + demo dashboard
-- Implement `useEngineSwitcher`.
-- Build `Dashboard`, `Comparison`, `SchemaPicker`, `EngineToggle`, `StatePreview`, `ValidationPanel`.
-- Add `SwitchingEngines` play-function story.
+### Phase 4 -- Default field components (flat types only)
 
-**Done when:** Demo app runs via `npm run dev`; switching engines mid-edit preserves values; comparison page shows both engines in sync.
+*Outcome:* the 8 flat MUI-backed field components exist and are documented in Storybook.
 
-### Phase 7 -- Polish
-- Error boundary around each field.
-- Form-level submit error surface (`errors['']`).
-- Logger hook-up for fallback + error boundary events.
-- `dependsOn` wiring with a `<form.Subscribe>`-style hook (engine-agnostic) for conditional rendering.
-- Motion crossfade on engine swap.
+- Entry gate: Phase 3 merged.
+- Build, one component per commit inside the phase PR if possible:
+  - `TextField` (text, password, email -- variants via `type`)
+  - `NumberField`
+  - `TextareaField`
+  - `SelectField`
+  - `CheckboxField`
+  - `SwitchField`
+  - `RadioGroupField`
+  - `DateField` (native `type="date"` via MUI `TextField` for v1; upgrade to `@mui/x-date-pickers` if needed later)
+- Each component accepts `{ spec, binding, form }`, reads `label` / `helperText` / `placeholder` / `options` from `spec.meta`, wires `binding.value` / `binding.onChange` / `binding.onBlur`, surfaces `binding.error` via MUI `error` + `helperText`.
+- Every component co-located with a `*.stories.tsx` file showing `Default`, `WithError`, `Disabled`. No `ObjectField` or `ArrayField` yet.
+- Exit gate: all stories render; `@storybook/addon-a11y` reports zero violations; component-level unit tests exist for each field (3-5 lines each, checking label + error surfacing).
+- PR contents: 8 component folders, 8 stories, 8 test files. Register all into the default registry created in Phase 3.
 
-**Done when:** All edge cases in Section 8 have explicit tests.
+### Phase 5 -- TanStack Form engine adapter
 
-### Phase 8 -- Docs + examples (optional v1.1)
-- Add `docs/schema-driven-ui-overview.md` quick-start.
-- Auto-generate field docs from `get-documentation` MCP.
+*Outcome:* a working `FormEngine` built on TanStack Form.
+
+- Entry gate: Phases 2 and 4 merged.
+- Create `src/framework/engines/types.ts` with `FormEngine`, `FormHandle`, `FieldBinding` (v1 shape; no `capabilities` yet).
+- Create `src/framework/engines/tanstack/TanStackEngine.ts` and `useTanStackForm.ts`.
+  - `useForm({ spec, defaultValues, onSubmit })` wraps `@tanstack/react-form`.
+  - `getFieldProps(path)` returns `{ value, onChange, onBlur, error, name }` by subscribing to the TanStack field meta.
+  - Per-field validators attach via `validators.onChange: spec.validators.byField[path]`.
+  - Array operations exposed via `arrayOps: { push, remove, move }` backed by TanStack's array helpers.
+- Unit tests using `@testing-library/react` + a tiny test harness:
+  - Typing into a field updates `values`.
+  - Invalid values produce the expected Zod error.
+  - `submit()` resolves when valid; rejects when invalid.
+  - Array push/remove/move mutate correctly.
+- Exit gate: adapter tests green; no `SchemaForm` yet.
+- PR contents: 3 files + 1 test file.
+
+### Phase 6 -- `SchemaForm` + LayoutRenderer + FieldRenderer
+
+*Outcome:* a consumer can call `<SchemaForm schema={…} onSubmit={…} />` and get a working form.
+
+- Entry gate: Phases 2, 3, 4, 5 merged.
+- Create `src/framework/renderer/`:
+  - `FormContext.ts` -- React context for `{ spec, handle, registry }`.
+  - `LayoutRenderer.tsx` -- translates `LayoutNode` tree into MUI `Grid` v2 tree.
+  - `FieldRenderer.tsx` -- resolves `spec.type` via registry, renders component or `FallbackField`.
+  - `SchemaForm.tsx` -- top-level orchestrator (compile spec, call engine `useForm`, wrap in provider, render layout).
+  - `FormActions.tsx` -- default submit/reset bar with `disabled={!isValid || isSubmitting}`.
+- Public API from `src/framework/index.ts`:
+  - `SchemaForm`, `ui`, `defaultRegistry` only. Nothing else exported from the root.
+- Create `src/framework/contracts/signup.schema.ts` with the schema from Section 4.1.
+- Storybook: `SchemaForm/SchemaForm.stories.tsx` with `Default` and `WithValidationErrors` (play function fills invalid values and asserts inline errors).
+- Exit gate:
+  - Signup form renders in Storybook with tokens-derived MUI styling.
+  - Live validation works (type invalid email → error appears after blur or change).
+  - Submit with valid values calls `onSubmit` with typed `z.infer<typeof SignupSchema>`.
+  - a11y addon reports zero violations.
+  - 80%+ statements coverage on the renderer files.
+
+### Phase 7 -- Nested objects and arrays
+
+*Outcome:* nested schemas and dynamic arrays render correctly.
+
+- Entry gate: Phase 6 merged.
+- Create `src/framework/fields/ObjectField/ObjectField.tsx` -- recursively renders sub-specs via `LayoutRenderer`.
+- Create `src/framework/fields/ArrayField/ArrayField.tsx` -- uses `form.arrayOps` to add/remove rows, each row is a sub-layout of the item schema.
+- Register both in the default registry.
+- Create `src/framework/contracts/profile.schema.ts` (nested `address`) and `src/framework/contracts/survey.schema.ts` (array of question/answer).
+- Storybook stories demonstrating both.
+- Tests: `ArrayField` push/remove behavior via Testing Library; depth-limit violation path in `compile.test.ts`.
+- Exit gate: both stories render, validate, submit; depth-limit test green.
+
+### Phase 8 -- Demo dashboard
+
+*Outcome:* a single page a junior can run (`npm run dev`) that showcases the framework.
+
+- Entry gate: Phase 7 merged.
+- Build `src/demo/App.tsx` with a router route:
+  - `/` = `Dashboard` page with:
+    - `SchemaPicker` (dropdown listing 4 schemas: signup, profile, survey, contact)
+    - `<SchemaForm>` rendered for the chosen schema
+    - `StatePreview` panel showing `JSON.stringify(currentValues, null, 2)` (subscribes to the form via a hook exposed by the renderer)
+    - `ValidationPanel` listing current errors
+- Wire existing demo `package.json` scripts to point `dev` at `src/demo/App.tsx`.
+- One simple Playwright-less smoke test is sufficient: a Storybook play function for each schema.
+- Exit gate:
+  - `npm run dev` loads the dashboard on :5173.
+  - Switching schemas in the picker remounts the form with fresh defaults.
+  - Editing fields updates `StatePreview` live.
+  - Invalid values show in `ValidationPanel`.
+  - No engine toggle in v1 (deferred to Phase 12).
+
+### Phase 9 -- Polish, quickstart, and v1 docs
+
+*Outcome:* v1 is ready for juniors.
+
+- Entry gate: Phase 8 merged.
+- Wrap `FieldRenderer` in an `ErrorBoundary` per field so one broken field doesn't crash the form.
+- Add form-level error surface: when `onSubmit` rejects, render an MUI `Alert` at the top of the form with the error message; store as `errors['']` on the handle.
+- Write `docs/schema-forms-quickstart.md` (~200 lines) based on Appendix A.4's "contact form in 10 minutes" flow. Include: add a field, add validation, style one field (via `componentProps`), test a form with `renderWithProviders`.
+- Write `docs/schema-forms-cookbook.md` with 6 copy-paste recipes.
+- Add JSDoc with one example each on `ui()`, `SchemaForm`, and every default field component.
+- Verify Storybook Docs tab is populated for every field.
+- Exit gate: all Appendix A.8 sanity checks pass. A volunteer (a new engineer, not the author) can build the contact form from the quickstart in under 10 minutes.
+
+### Phase 10 -- Nx library promotion (optional timing)
+
+*Outcome:* the framework lives in `libs/ibc/schema-forms/` as an Nx library and consumer apps import from `@ibc/schema-forms`.
+
+- Follow Appendix B steps 1-10 exactly. No code is rewritten; everything is a move or a config addition.
+- Exit gate: Appendix B.11 acceptance checklist all green.
+
+### Phase 11 -- RHF adapter + parity contract tests (v1.1)
+
+*Outcome:* a second engine exists, proving the abstraction holds.
+
+- Reintroduce `FormHandle.capabilities` in the engine types.
+- Implement `src/framework/engines/rhf/RHFEngine.ts` + `useRHFForm.ts` against the same interface.
+- Build `src/framework/engines/__tests__/parity.test.ts`:
+  ```ts
+  describe.each(['tanstack', 'rhf'] as const)('engine parity: %s', (name) => {
+    it('runs Zod validators per-field', …)
+    it('supports array push/remove/move', …)
+    it('resolves submit with typed values', …)
+  })
+  ```
+- Add `engine` prop to `SchemaForm` (default `'tanstack'`); dynamic `import()` of engines so only the active one ships.
+- Exit gate: parity suite runs against both engines and is green.
+
+### Phase 12 -- Engine switcher + comparison demo (v1.1)
+
+*Outcome:* the demo showcases the abstraction with live engine switching.
+
+- Implement `useEngineSwitcher` per Section 5.4.
+- Add an `EngineToggle` control to the dashboard.
+- Add a `/compare` route that renders the same schema with both engines side-by-side, sharing `defaultValues`.
+- Add a `SwitchingEngines` Storybook play function that toggles engines mid-edit and asserts preserved values.
+
+### Phase 13 -- Advanced meta (v1.1)
+
+*Outcome:* async validation, conditional fields, and hidden/readonly fields are first-class.
+
+- Extend `FieldMeta` with `asyncValidate`, `dependsOn`, `hidden`, `readOnly`, `clearOnHide`.
+- Implement the async validator registry (named validators referenced by string so schemas stay JSON-safe).
+- Implement `dependsOn` via a re-render hook that subscribes to specific paths.
+- Implement hidden/readonly behavior in `FieldRenderer`.
+- Add cookbook examples for each.
+
+### Tracking and visibility
+
+Each phase is a single PR using the Conventional Commits format (`feat(schema-forms): phase 3 -- field registry and fallback`). A junior can open `docs/schema-driven-ui-framework-plan.md` Section 13, scroll to the current phase, and know exactly what files to touch, what tests to write, and what the exit gate is. No phase depends on more than three earlier phases, so the graph is small.
+
+Project managers can track v1 completion as "Phases 0-9 green". Phase 10 (Nx) is independent and can land whenever the monorepo is ready. v1.1 work (Phases 11-13) is triggered only by a real user need.
 
 ---
 
