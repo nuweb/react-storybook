@@ -631,6 +631,48 @@ Execution is broken into small, sequential phases. Each phase is sized to fit in
 
 **Stack target:** React 19 + MUI v9 + TanStack Form + Zod v3. See Appendix C for the rationale and the downlevel compatibility story.
 
+### One phase = one PR
+
+This is the load-bearing constraint of the execution plan. It keeps reviews small, lets CI run end-to-end per phase, and gives the team a clean revert boundary if any phase ships a problem.
+
+Rules:
+
+- **Exactly one phase per PR.** Do not combine phases, even tiny ones. Phase 1 + Phase 3 land as two PRs.
+- **Do not start a phase until its entry gate is green on `main`.** The Depends-on column in the map is the dependency constraint.
+- **Exit-gate bullets must all be true before merge.** CI checks them where possible (tests, type-check, lint, Storybook a11y); reviewers check the rest.
+- **Branch name:** `feat/schema-forms-phase-<N>-<kebab-slug>` (e.g., `feat/schema-forms-phase-3-field-registry`).
+- **Commit message (PR title):** `feat(schema-forms): phase <N> -- <short summary>` (Conventional Commits). Body lists the phase's file changes and references the "PR contents" bullets from this document.
+- **PR description template:** copy the block in Section 13.1 below into every phase PR.
+- **Size target:** < 500 net lines of code changed per phase for v1 phases. If a phase grows past that, split it (the dependency graph allows splitting phases 4 and 6 by field type or by renderer concern).
+- **No cross-phase refactors.** A phase may only touch files in its declared scope plus trivial type-import fixups. Broader refactors are their own PRs that don't claim a phase number.
+- **Revert policy.** Each phase is independently revertable. If Phase 6 regresses, reverting the single PR restores `main` to Phase 5's green state.
+
+### 13.1 PR description template
+
+Every phase PR's description starts with this block, filled in:
+
+```md
+## Phase <N> -- <phase name>
+
+**Release target:** v1 | v1.1
+**Depends on phases:** <comma-separated phase numbers, or "--">
+**Plan reference:** docs/schema-driven-ui-framework-plan.md Section 13, Phase <N>
+
+### Entry gate (must be true before this PR)
+- [ ] <paste from plan>
+
+### Exit gate (must be true before merge)
+- [ ] <paste from plan>
+
+### Files changed
+- <list>
+
+### Out of scope
+- <explicit list of things this PR intentionally does NOT do, to reassure reviewers not to ask for them>
+```
+
+The "out of scope" block is the thing that stops review scope-creep from fusing phases.
+
 ### Map of phases
 
 | # | Phase | Release | Depends on | Rough size |
@@ -799,6 +841,7 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - Submit with valid values calls `onSubmit` with typed `z.infer<typeof SignupSchema>`.
   - a11y addon reports zero violations.
   - 80%+ statements coverage on the renderer files.
+- PR contents: 5 renderer files, `FormContext`, `SchemaForm/SchemaForm.stories.tsx`, `signup.schema.ts`, `index.ts` public surface, renderer tests. No changes to `core/`, `engines/`, or `fields/`.
 
 ### Phase 7 -- Nested objects and arrays
 
@@ -812,6 +855,7 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Storybook stories demonstrating both.
 - Tests: `ArrayField` push/remove behavior via Testing Library; depth-limit violation path in `compile.test.ts`.
 - Exit gate: both stories render, validate, submit; depth-limit test green.
+- PR contents: `ObjectField/`, `ArrayField/` folders (component + stories + test), registry registration, `profile.schema.ts`, `survey.schema.ts`, one new test case in `compile.test.ts`.
 
 ### Phase 8 -- Demo dashboard
 
@@ -832,6 +876,7 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - Editing fields updates `StatePreview` live.
   - Invalid values show in `ValidationPanel`.
   - No engine toggle in v1 (deferred to Phase 12).
+- PR contents: `src/demo/App.tsx`, `src/demo/pages/Dashboard.tsx`, `src/demo/components/SchemaPicker.tsx`, `src/demo/components/StatePreview.tsx`, `src/demo/components/ValidationPanel.tsx`, `contact.schema.ts`, `vite.config.ts` + `package.json` script wiring.
 
 ### Phase 9 -- Polish, quickstart, and v1 docs
 
@@ -845,18 +890,22 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Add JSDoc with one example each on `ui()`, `SchemaForm`, and every default field component.
 - Verify Storybook Docs tab is populated for every field.
 - Exit gate: all Appendix A.8 sanity checks pass. A volunteer (a new engineer, not the author) can build the contact form from the quickstart in under 10 minutes.
+- PR contents: `src/framework/renderer/FieldErrorBoundary.tsx`, form-level error wiring in `SchemaForm.tsx`, `docs/schema-forms-quickstart.md`, `docs/schema-forms-cookbook.md`, JSDoc additions on public-API files, no behavior changes.
 
 ### Phase 10 -- Nx library promotion (optional timing)
 
 *Outcome:* the framework lives in `libs/ibc/schema-forms/` as an Nx library and consumer apps import from `@ibc/schema-forms`.
 
+- Entry gate: Phase 9 merged; team has decided a monorepo promotion is desired.
 - Follow Appendix B steps 1-10 exactly. No code is rewritten; everything is a move or a config addition.
 - Exit gate: Appendix B.11 acceptance checklist all green.
+- PR contents: this one is deliberately large because it moves the folder tree. Keep it to a single PR by performing the move in a single commit, then follow-up commits for `project.json`, `package.json` exports, tags, Storybook composition. No behavior changes; tests must pass identically to pre-move.
 
 ### Phase 11 -- RHF adapter + parity contract tests (v1.1)
 
 *Outcome:* a second engine exists, proving the abstraction holds.
 
+- Entry gate: Phase 5 and Phase 6 merged. (Phase 10 not required.)
 - Reintroduce `FormHandle.capabilities` in the engine types.
 - Implement `src/framework/engines/rhf/RHFEngine.ts` + `useRHFForm.ts` against the same interface.
 - Build `src/framework/engines/__tests__/parity.test.ts`:
@@ -869,31 +918,40 @@ Skip this phase if the app is already on React 19 + MUI v9.
   ```
 - Add `engine` prop to `SchemaForm` (default `'tanstack'`); dynamic `import()` of engines so only the active one ships.
 - Exit gate: parity suite runs against both engines and is green.
+- PR contents: `engines/rhf/` folder, `engines/types.ts` capabilities addition, `engines/__tests__/parity.test.ts`, `SchemaForm.tsx` engine-prop wiring, `package.json` peer-dep update. No default-registry or field-component changes.
 
 ### Phase 12 -- Engine switcher + comparison demo (v1.1)
 
 *Outcome:* the demo showcases the abstraction with live engine switching.
 
+- Entry gate: Phase 11 merged.
 - Implement `useEngineSwitcher` per Section 5.4.
 - Add an `EngineToggle` control to the dashboard.
 - Add a `/compare` route that renders the same schema with both engines side-by-side, sharing `defaultValues`.
 - Add a `SwitchingEngines` Storybook play function that toggles engines mid-edit and asserts preserved values.
+- Exit gate: toggling engines mid-edit preserves values; `/compare` renders both side-by-side with synced values; play function passes.
+- PR contents: `src/framework/engines/switcher.ts`, `src/demo/components/EngineToggle.tsx`, `src/demo/pages/Comparison.tsx`, new route in `App.tsx`, one new Storybook story.
 
 ### Phase 13 -- Advanced meta (v1.1)
 
 *Outcome:* async validation, conditional fields, and hidden/readonly fields are first-class.
 
+- Entry gate: Phase 6 merged. (Phase 11 not required; these features work with TanStack-only.)
 - Extend `FieldMeta` with `asyncValidate`, `dependsOn`, `hidden`, `readOnly`, `clearOnHide`.
 - Implement the async validator registry (named validators referenced by string so schemas stay JSON-safe).
 - Implement `dependsOn` via a re-render hook that subscribes to specific paths.
 - Implement hidden/readonly behavior in `FieldRenderer`.
 - Add cookbook examples for each.
+- Exit gate: each new meta field has a dedicated Storybook story plus a unit test; cookbook entries green.
+- PR contents: `core/types.ts` meta extension, `core/asyncValidators.ts` registry, `renderer/FieldRenderer.tsx` hidden/readonly handling, `hooks/useDependentFields.ts`, four new Storybook stories, four new cookbook sections. This phase can optionally be split into 13a (hidden/readonly) and 13b (async + dependsOn) if the diff exceeds 500 lines.
 
 ### Tracking and visibility
 
-Each phase is a single PR using the Conventional Commits format (`feat(schema-forms): phase 3 -- field registry and fallback`). A junior can open `docs/schema-driven-ui-framework-plan.md` Section 13, scroll to the current phase, and know exactly what files to touch, what tests to write, and what the exit gate is. No phase depends on more than three earlier phases, so the graph is small.
+A junior can open `docs/schema-driven-ui-framework-plan.md` Section 13, scroll to the current phase, and know exactly what files to touch, what tests to write, and what the exit gate is. No v1 phase depends on more than three earlier phases, so the graph is small and easy to parallelize where dependencies allow (phases 3 and 4 can run alongside 2; phases 11 and 13 can run alongside each other in v1.1).
 
-Project managers can track v1 completion as "Phases 0-9 green". Phase 10 (Nx) is independent and can land whenever the monorepo is ready. v1.1 work (Phases 11-13) is triggered only by a real user need.
+**Dashboard view.** Maintain a pinned GitHub issue titled "Schema Forms v1 Progress" that lists the phases as checkboxes and links to the PR for each. When a phase PR merges, check its box. v1 is complete when phases -1 through 9 are checked.
+
+Project managers can track v1 completion as "Phases -1 through 9 green". Phase 10 (Nx) is independent and can land whenever the monorepo is ready. v1.1 work (Phases 11-13) is triggered only by a real user need.
 
 ---
 
