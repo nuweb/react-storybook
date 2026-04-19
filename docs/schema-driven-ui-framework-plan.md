@@ -661,8 +661,9 @@ Every phase PR's description starts with this block, filled in:
 ### Entry gate (must be true before this PR)
 - [ ] <paste from plan>
 
-### Exit gate (must be true before merge)
-- [ ] <paste from plan>
+### Acceptance criteria (must be true before merge)
+- [ ] <paste from plan -- phase-specific criteria>
+- [ ] All Definition of Done items pass (Section 13.2)
 
 ### Files changed
 - <list>
@@ -672,6 +673,33 @@ Every phase PR's description starts with this block, filled in:
 ```
 
 The "out of scope" block is the thing that stops review scope-creep from fusing phases.
+
+### 13.2 Definition of Done (applies to every phase)
+
+Every phase PR -- without exception -- must satisfy this universal checklist in addition to its phase-specific acceptance criteria. CI enforces the mechanical items; reviewers enforce the rest.
+
+**Mechanical (CI-enforced):**
+
+- [ ] `npm run build` succeeds (TypeScript strict mode, zero errors).
+- [ ] `npm test` passes (Vitest, zero failures). New code is covered by tests at the coverage threshold for its library type (see Section 6c of the skill: `type:ui` 90%, `type:util` 95%, `type:feature` 75%, `type:data-access` 85%).
+- [ ] `npm run lint` passes (ESLint strict + `jsx-a11y` recommended; zero errors).
+- [ ] `npm run build-storybook` succeeds.
+- [ ] `@storybook/addon-a11y` reports zero new violations on any new or modified story.
+
+**Manual (reviewer-enforced):**
+
+- [ ] The PR description matches the template in Section 13.1, entry/acceptance bullets pasted from the plan.
+- [ ] The PR touches only files listed in the phase's "PR contents". No cross-phase refactors.
+- [ ] No new `useMemo` / `useCallback` / `React.memo` has been added (React Compiler handles memoization; see Section 16 of the skill).
+- [ ] No new inline styles for values a token covers (colors, spacing, radii, shadows, typography); all styling flows through MUI theme + `sx` or design tokens.
+- [ ] No barrel `index.ts` files added inside `framework/` subfolders (only the top-level public-surface `index.ts`; see Appendix B.4 exports map).
+- [ ] Public API additions (new exports from the root) are documented with JSDoc including one example.
+- [ ] If the phase adds a component, it has a Storybook story with a `Default` variant showing a production-realistic state.
+- [ ] If the phase changes public API, a note is added to the `CHANGELOG.md` under `## Unreleased`.
+
+**Phase-specific exit artifact:**
+
+Every phase must produce at least one observable artifact a reviewer can click on or run. Typically this is a Storybook story, a `npm run dev` route, or a Vitest test file. "Code landed, no visible artifact" is never acceptable -- even pure-core phases (1, 2, 3, 5) produce test files the reviewer runs.
 
 ### Map of phases
 
@@ -708,7 +736,16 @@ Phases 0-9 in order give a junior dev a shippable v1. Phase 10 (Nx promotion) ca
   5. Grep and fix remaining deprecations: `component=` / `componentsProps=` → `slots` + `slotProps`; deprecated system layout props on `<Box>` / `<Grid>` → `sx`; remove `disableEscapeKeyDown` from `Dialog` / `Modal`.
   6. Ensure `createTheme({ cssVariables: true })` is active.
   7. Remove any `MuiTouchRipple` theme overrides.
-- Exit gate: existing Storybook + a11y addon across every story is green; Vitest snapshots match or are intentionally updated; `npm run dev` and `npm run storybook` work on the new stack.
+- Acceptance criteria:
+  - [ ] `package.json` shows `react@^19`, `@mui/material@^9`, `@mui/icons-material@^9`, `@mui/system@^9`.
+  - [ ] `babel-plugin-react-compiler` is installed and wired into `vite.config.ts`.
+  - [ ] `npm run build` succeeds on TypeScript strict mode with zero errors.
+  - [ ] `npm run dev` loads the app and all existing routes render.
+  - [ ] `npm run storybook` loads and every existing story renders.
+  - [ ] `@storybook/addon-a11y` reports zero new violations vs. pre-upgrade baseline.
+  - [ ] Vitest suite passes; any intentional snapshot updates are called out in the PR description.
+  - [ ] Zero occurrences of `forwardRef`, `component=`, `componentsProps=`, or `disableEscapeKeyDown` remain in `src/`.
+  - [ ] `createTheme({ cssVariables: true })` is active (verify `--mui-palette-*` variables on `:root`).
 - PR contents: `package.json` + lockfile diff, codemod output, hand-fixed deprecations, theme adjustments. No framework code yet.
 
 Skip this phase if the app is already on React 19 + MUI v9.
@@ -723,11 +760,14 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Create `src/framework/tokens/mui-theme.ts` bridging `src/tokens/design-tokens.css` into `createTheme({ cssVariables: true, colorSchemes: { light, dark } })`.
 - Wrap `src/main.tsx` with `<ThemeProvider theme={theme}><CssBaseline />…</ThemeProvider>`.
 - Wrap Storybook via `.storybook/preview.ts` using `withThemeFromJSXProvider`.
-- Exit gate:
-  - `npm test` runs and passes the smoke test.
-  - `npm run dev` and `npm run storybook` still work.
-  - MUI Button renders with tokens-derived palette in a throwaway story.
-  - `--mui-palette-*` CSS variables are present on `:root` (verifies `cssVariables: true` wired).
+- Acceptance criteria:
+  - [ ] Framework deps installed: `zod@^3`, `@tanstack/react-form@^1`, `@tanstack/zod-form-adapter`, `@testing-library/react@^16`, `@testing-library/user-event@^14`, `vitest@^2`, `jsdom@^25`, `msw@^2`.
+  - [ ] `npm test` runs via Vitest and passes the smoke test.
+  - [ ] `npm run dev` loads the app; `npm run storybook` loads Storybook.
+  - [ ] A throwaway Storybook story renders an MUI Button with a token-derived palette (verifies theme + tokens wired).
+  - [ ] `--mui-palette-*` CSS variables are present on `:root` (verifies `cssVariables: true` wired).
+  - [ ] `ThemeProvider` wraps the app in `src/main.tsx` and Storybook via `withThemeFromJSXProvider` in `.storybook/preview.ts`.
+  - [ ] No framework code (`src/framework/core`, `engines`, `renderer`, `fields`) exists yet -- this phase only sets up foundations.
 - PR contents: `package.json` diff, `vitest.config.ts`, `src/framework/tokens/mui-theme.ts`, theme provider wiring, one smoke test, one temporary Storybook check.
 
 ### Phase 1 -- Core types and `ui()` helper
@@ -741,7 +781,12 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Unit tests in `src/framework/core/__tests__/meta.test.ts`:
   - `ui()` round-trips meta through `.optional()`, `.nullable()`, `.default()`, `.describe()`.
   - Malformed envelopes throw `SchemaFormError` with the path.
-- Exit gate: `npm test` green; no renderer or engine code yet.
+- Acceptance criteria:
+  - [ ] `ui(schema, meta)` returns the same Zod schema reference with an embedded meta envelope readable by a `readMeta()` helper.
+  - [ ] Round-trip tests pass for `.optional()`, `.nullable()`, `.default()`, `.describe()`, `.refine()`.
+  - [ ] TypeScript type of `ui(z.string(), meta)` is still `z.ZodString` (no type narrowing lost).
+  - [ ] Calling `ui()` with invalid meta throws `SchemaFormError` carrying a field path in dev mode; production mode falls through silently with a `console.warn`.
+  - [ ] No renderer or engine code imported anywhere in `core/`.
 - PR contents: the four files above plus one test file.
 
 ### Phase 2 -- `compile()` (schema → FormSpec)
@@ -765,7 +810,15 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - Array produces correct paths (`hobbies[0].name`).
   - Depth > 5 throws.
   - Missing meta falls back to defaults.
-- Exit gate: snapshot tests green for flat + nested + array schemas.
+- Acceptance criteria:
+  - [ ] `compile(flatSchema)` produces a snapshot matching the expected `FormSpec` (test via Vitest's `toMatchInlineSnapshot`).
+  - [ ] Type inference mapping (`ZodString`→`text`, `ZodNumber`→`number`, `ZodBoolean`→`checkbox`, `ZodEnum`→`select`, `ZodArray`→`array`, `ZodObject`→`object`, `ZodDate`→`date`) has a test case per Zod node type.
+  - [ ] Nested `z.object({ address: z.object({ city: z.string() }) })` produces a field at path `address.city` with `depth === 1`.
+  - [ ] Array `z.array(z.object({ name: z.string() }))` produces an `array` field whose item sub-spec has path `items[].name`.
+  - [ ] Schema nested 6 levels deep throws `SchemaFormError` carrying the offending path; 5 levels deep does not throw.
+  - [ ] When meta omits `type`, `label`, and `col`, the compiled field has inferred `type`, title-cased `label` from the field name, and `col: { xs: 12 }`.
+  - [ ] `compile()` is memoized via `WeakMap`: calling it twice on the same schema reference returns referentially equal `FormSpec`.
+  - [ ] `FormSpec.validators.whole` equals the original schema; `FormSpec.validators.byField[path]` is a sub-schema for live per-field validation.
 - PR contents: `compile.ts` + tests + a `__fixtures__/` folder of small schemas.
 
 ### Phase 3 -- Field registry and FallbackField
@@ -780,7 +833,14 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - `get(type)` returns registered component; returns `undefined` for unknown.
   - `extend()` does not mutate the base registry.
 - Storybook: one story for `FallbackField` showing an unknown-type warning.
-- Exit gate: tests green; fallback renders in Storybook.
+- Acceptance criteria:
+  - [ ] `createDefaultRegistry()` returns an empty registry (fields populated in Phase 4).
+  - [ ] `registry.extend({ foo: FooField })` produces a new registry; base is unchanged.
+  - [ ] `registry.get('unknown')` returns `undefined`.
+  - [ ] `FallbackField` renders an MUI `Alert` at severity `warning` naming the attempted type.
+  - [ ] `FallbackField` still wires `binding.value` / `binding.onChange` so the form can submit.
+  - [ ] In `NODE_ENV !== 'production'`, using an unknown type emits exactly one `console.warn` per unique field path (not per re-render).
+  - [ ] Fallback story visible in Storybook at `Framework/Renderer/FallbackField`.
 
 ### Phase 4 -- Default field components (flat types only)
 
@@ -798,7 +858,16 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - `DateField` (native `type="date"` via MUI `TextField` for v1; upgrade to `@mui/x-date-pickers` if needed later)
 - Each component accepts `{ spec, binding, form }`, reads `label` / `helperText` / `placeholder` / `options` from `spec.meta`, wires `binding.value` / `binding.onChange` / `binding.onBlur`, surfaces `binding.error` via MUI `error` + `helperText`.
 - Every component co-located with a `*.stories.tsx` file showing `Default`, `WithError`, `Disabled`. No `ObjectField` or `ArrayField` yet.
-- Exit gate: all stories render; `@storybook/addon-a11y` reports zero violations; component-level unit tests exist for each field (3-5 lines each, checking label + error surfacing).
+- Acceptance criteria:
+  - [ ] All 8 components exist, each as `src/framework/fields/<Name>/<Name>.tsx` + `.stories.tsx` + `.test.tsx`.
+  - [ ] Each component accepts `{ spec, binding, form }` and only these three props; implementation details (e.g., MUI-specific props) are passed through `spec.meta.componentProps`.
+  - [ ] Each component renders `spec.meta.label` wired to the input via `htmlFor` / `aria-labelledby`.
+  - [ ] Each component surfaces `binding.error` inline via MUI `helperText` + `error` state.
+  - [ ] Each component calls `binding.onBlur` on blur and `binding.onChange` with the correct typed value (not the raw DOM event).
+  - [ ] Each component's `Default`, `WithError`, `Disabled` stories render in Storybook.
+  - [ ] `@storybook/addon-a11y` reports zero violations on every story.
+  - [ ] All 8 components are registered in `defaultRegistry` (Phase 3's empty registry now populated).
+  - [ ] 80%+ statement coverage on each field component.
 - PR contents: 8 component folders, 8 stories, 8 test files. Register all into the default registry created in Phase 3.
 
 ### Phase 5 -- TanStack Form engine adapter
@@ -817,7 +886,15 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - Invalid values produce the expected Zod error.
   - `submit()` resolves when valid; rejects when invalid.
   - Array push/remove/move mutate correctly.
-- Exit gate: adapter tests green; no `SchemaForm` yet.
+- Acceptance criteria:
+  - [ ] `useTanStackForm({ spec, defaultValues, onSubmit })` returns a `FormHandle` matching `engines/types.ts` exactly.
+  - [ ] `handle.getFieldProps('email')` returns `{ value, onChange, onBlur, error, name }` with `name === 'email'`.
+  - [ ] Typing in a test harness input updates `handle.values.email` after the next tick.
+  - [ ] Zod `email()` validator surfaces as `handle.errors.email[0]` on invalid input.
+  - [ ] Async validators with `onChangeAsyncDebounceMs: 300` fire at most once per 300ms of typing (verified via fake timers).
+  - [ ] `handle.submit()` resolves when valid; when invalid, it rejects *without* calling the user's `onSubmit`.
+  - [ ] `handle.arrayOps.push('items', value)` adds an item; `.remove('items', 0)` removes the first; `.move('items', 0, 1)` swaps.
+  - [ ] No `SchemaForm` or renderer imports anywhere in `engines/`.
 - PR contents: 3 files + 1 test file.
 
 ### Phase 6 -- `SchemaForm` + LayoutRenderer + FieldRenderer
@@ -835,12 +912,17 @@ Skip this phase if the app is already on React 19 + MUI v9.
   - `SchemaForm`, `ui`, `defaultRegistry` only. Nothing else exported from the root.
 - Create `src/framework/contracts/signup.schema.ts` with the schema from Section 4.1.
 - Storybook: `SchemaForm/SchemaForm.stories.tsx` with `Default` and `WithValidationErrors` (play function fills invalid values and asserts inline errors).
-- Exit gate:
-  - Signup form renders in Storybook with tokens-derived MUI styling.
-  - Live validation works (type invalid email → error appears after blur or change).
-  - Submit with valid values calls `onSubmit` with typed `z.infer<typeof SignupSchema>`.
-  - a11y addon reports zero violations.
-  - 80%+ statements coverage on the renderer files.
+- Acceptance criteria:
+  - [ ] `<SchemaForm schema={SignupSchema} onSubmit={fn} />` renders a working form with one field per schema property.
+  - [ ] Signup form renders in Storybook with tokens-derived MUI styling (no unstyled inputs, no inline colors).
+  - [ ] Live validation works: typing an invalid email shows the error inline after blur or change.
+  - [ ] Submit with valid values calls `onSubmit` with a value typed as `z.infer<typeof SignupSchema>` (TypeScript-checked).
+  - [ ] Submit with invalid values does NOT call `onSubmit`; invalid fields are highlighted and focus moves to the first invalid field.
+  - [ ] `LayoutRenderer` produces the default layout (one row per field) when the schema has no layout meta.
+  - [ ] `FieldRenderer` falls back to `FallbackField` when a schema uses an unregistered `type`.
+  - [ ] Public `src/framework/index.ts` exports exactly three names: `SchemaForm`, `ui`, `defaultRegistry`.
+  - [ ] a11y addon reports zero violations on the `SchemaForm/Default` and `SchemaForm/WithValidationErrors` stories.
+  - [ ] 80%+ statement coverage on files in `src/framework/renderer/`.
 - PR contents: 5 renderer files, `FormContext`, `SchemaForm/SchemaForm.stories.tsx`, `signup.schema.ts`, `index.ts` public surface, renderer tests. No changes to `core/`, `engines/`, or `fields/`.
 
 ### Phase 7 -- Nested objects and arrays
@@ -854,7 +936,15 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Create `src/framework/contracts/profile.schema.ts` (nested `address`) and `src/framework/contracts/survey.schema.ts` (array of question/answer).
 - Storybook stories demonstrating both.
 - Tests: `ArrayField` push/remove behavior via Testing Library; depth-limit violation path in `compile.test.ts`.
-- Exit gate: both stories render, validate, submit; depth-limit test green.
+- Acceptance criteria:
+  - [ ] `ObjectField` renders nested paths correctly (`address.city` → `<input name="address.city">`).
+  - [ ] Editing a nested field updates the parent `values` tree without clobbering siblings.
+  - [ ] `ArrayField` renders an "Add" button; clicking it calls `form.arrayOps.push(path, defaults)` and a new row appears.
+  - [ ] Each array row renders a "Remove" button that calls `form.arrayOps.remove(path, index)`.
+  - [ ] Array rows render with their own sub-layout (one row per item field) derived from the item schema.
+  - [ ] Depth-limit story in Storybook shows a compile error message when a schema nests past 5 levels.
+  - [ ] `profile.stories.tsx` and `survey.stories.tsx` have `Default`, `WithValidationErrors`, and `Submitting` variants.
+  - [ ] a11y addon reports zero violations on both stories (labels associated with inputs, "Add"/"Remove" buttons have accessible names).
 - PR contents: `ObjectField/`, `ArrayField/` folders (component + stories + test), registry registration, `profile.schema.ts`, `survey.schema.ts`, one new test case in `compile.test.ts`.
 
 ### Phase 8 -- Demo dashboard
@@ -870,12 +960,15 @@ Skip this phase if the app is already on React 19 + MUI v9.
     - `ValidationPanel` listing current errors
 - Wire existing demo `package.json` scripts to point `dev` at `src/demo/App.tsx`.
 - One simple Playwright-less smoke test is sufficient: a Storybook play function for each schema.
-- Exit gate:
-  - `npm run dev` loads the dashboard on :5173.
-  - Switching schemas in the picker remounts the form with fresh defaults.
-  - Editing fields updates `StatePreview` live.
-  - Invalid values show in `ValidationPanel`.
-  - No engine toggle in v1 (deferred to Phase 12).
+- Acceptance criteria:
+  - [ ] `npm run dev` loads the dashboard on :5173 with no console errors.
+  - [ ] `SchemaPicker` dropdown lists at least 4 schemas: signup, profile, survey, contact.
+  - [ ] Switching schemas in the picker remounts the form and resets to the new schema's defaults.
+  - [ ] `StatePreview` renders valid JSON of `handle.values` and updates on every keystroke (verified manually and via a play function).
+  - [ ] `ValidationPanel` lists current errors with field path + message; updates live as fields are edited.
+  - [ ] Each schema has a Storybook play function that fills a valid submission and asserts `onSubmit` fired with the right shape.
+  - [ ] No engine toggle is present (must ship in Phase 12, not earlier).
+  - [ ] The demo page is accessible: keyboard-only navigation reaches every interactive element, tab order is logical, focus visible.
 - PR contents: `src/demo/App.tsx`, `src/demo/pages/Dashboard.tsx`, `src/demo/components/SchemaPicker.tsx`, `src/demo/components/StatePreview.tsx`, `src/demo/components/ValidationPanel.tsx`, `contact.schema.ts`, `vite.config.ts` + `package.json` script wiring.
 
 ### Phase 9 -- Polish, quickstart, and v1 docs
@@ -889,8 +982,17 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Write `docs/schema-forms-cookbook.md` with 6 copy-paste recipes.
 - Add JSDoc with one example each on `ui()`, `SchemaForm`, and every default field component.
 - Verify Storybook Docs tab is populated for every field.
-- Exit gate: all Appendix A.8 sanity checks pass. A volunteer (a new engineer, not the author) can build the contact form from the quickstart in under 10 minutes.
-- PR contents: `src/framework/renderer/FieldErrorBoundary.tsx`, form-level error wiring in `SchemaForm.tsx`, `docs/schema-forms-quickstart.md`, `docs/schema-forms-cookbook.md`, JSDoc additions on public-API files, no behavior changes.
+- Acceptance criteria:
+  - [ ] `FieldErrorBoundary` wraps every rendered field so one field crashing does not blank the whole form; a friendly "This field failed to render" Alert appears in place.
+  - [ ] When `onSubmit` rejects, the form renders an MUI `Alert` above the form with the error message; the error is also stored at `handle.errors['']`.
+  - [ ] Server RFC 9457 `problem+json` responses with field-level errors are parsed and surfaced inline on the matching fields (per Section 19.5 contract).
+  - [ ] `docs/schema-forms-quickstart.md` exists, ≤ 200 lines, and includes: "install", "build a contact form in 10 minutes", "add validation", "style one field", "test with `renderWithProviders`".
+  - [ ] `docs/schema-forms-cookbook.md` has at least 6 copy-paste recipes, each runnable as-is.
+  - [ ] JSDoc with `@example` is present on `ui()`, `SchemaForm`, `defaultRegistry`, and every default field component.
+  - [ ] Storybook Docs tab is populated for every field (props table + working Controls + one "Try it" example).
+  - [ ] All Appendix A.8 sanity checks pass.
+  - [ ] Volunteer test: a new engineer (not the plan author) can build the contact form from the quickstart in under 10 minutes, without asking questions outside the docs.
+- PR contents: `src/framework/renderer/FieldErrorBoundary.tsx`, form-level error wiring in `SchemaForm.tsx`, `docs/schema-forms-quickstart.md`, `docs/schema-forms-cookbook.md`, JSDoc additions on public-API files, no behavior changes beyond error handling.
 
 ### Phase 10 -- Nx library promotion (optional timing)
 
@@ -898,7 +1000,15 @@ Skip this phase if the app is already on React 19 + MUI v9.
 
 - Entry gate: Phase 9 merged; team has decided a monorepo promotion is desired.
 - Follow Appendix B steps 1-10 exactly. No code is rewritten; everything is a move or a config addition.
-- Exit gate: Appendix B.11 acceptance checklist all green.
+- Acceptance criteria (Appendix B.11 as a checklist):
+  - [ ] `nx build ibc-schema-forms` emits a tree-shakeable ESM dist with `.d.ts` files.
+  - [ ] `nx test ibc-schema-forms` runs the unit suite green.
+  - [ ] `nx storybook ibc-schema-forms` serves stories on :6007 with a11y addon clean.
+  - [ ] `nx lint ibc-schema-forms` passes with module-boundary constraints active.
+  - [ ] A consumer app can `import { SchemaForm, ui } from '@ibc/schema-forms'` with zero barrel imports.
+  - [ ] `nx graph` shows `ibc-schema-forms` as a shared node with no inbound edges from `scope:shell` or `scope:agent` libs.
+  - [ ] Every test that passed pre-move still passes post-move.
+  - [ ] No behavior changes; `git diff --stat` shows predominantly file renames.
 - PR contents: this one is deliberately large because it moves the folder tree. Keep it to a single PR by performing the move in a single commit, then follow-up commits for `project.json`, `package.json` exports, tags, Storybook composition. No behavior changes; tests must pass identically to pre-move.
 
 ### Phase 11 -- RHF adapter + parity contract tests (v1.1)
@@ -917,7 +1027,14 @@ Skip this phase if the app is already on React 19 + MUI v9.
   })
   ```
 - Add `engine` prop to `SchemaForm` (default `'tanstack'`); dynamic `import()` of engines so only the active one ships.
-- Exit gate: parity suite runs against both engines and is green.
+- Acceptance criteria:
+  - [ ] `useRHFForm({ spec, defaultValues, onSubmit })` returns a `FormHandle` matching the same interface as `useTanStackForm`.
+  - [ ] Parity test suite has at least the following describe-each groups: per-field Zod validation, submit with typed values, array push/remove/move, reset with new values, error paths on invalid submit.
+  - [ ] Both engines pass every test in the parity suite. A failure on one engine fails CI.
+  - [ ] `<SchemaForm engine="rhf" …>` renders the same signup/profile/survey/contact schemas as `engine="tanstack"` with visually and functionally identical output.
+  - [ ] Bundle analysis (e.g., `rollup-plugin-visualizer`) confirms only the active engine ships in a production build (dynamic-import code-splitting verified).
+  - [ ] The default `engine` prop is `'tanstack'` so existing v1 call-sites are unchanged.
+  - [ ] `FormHandle.capabilities.fieldArrays === true` on both engines.
 - PR contents: `engines/rhf/` folder, `engines/types.ts` capabilities addition, `engines/__tests__/parity.test.ts`, `SchemaForm.tsx` engine-prop wiring, `package.json` peer-dep update. No default-registry or field-component changes.
 
 ### Phase 12 -- Engine switcher + comparison demo (v1.1)
@@ -929,7 +1046,13 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Add an `EngineToggle` control to the dashboard.
 - Add a `/compare` route that renders the same schema with both engines side-by-side, sharing `defaultValues`.
 - Add a `SwitchingEngines` Storybook play function that toggles engines mid-edit and asserts preserved values.
-- Exit gate: toggling engines mid-edit preserves values; `/compare` renders both side-by-side with synced values; play function passes.
+- Acceptance criteria:
+  - [ ] `useEngineSwitcher(initialName)` returns `{ engine, setEngine, snapshot }` where `snapshot` is the last-known form values from the outgoing engine.
+  - [ ] Toggling engines mid-edit: fill 3 fields, switch, verify those 3 values are still present; errors reset (they are engine-specific).
+  - [ ] `/compare` route renders two `<SchemaForm>` instances side-by-side on the same schema, one per engine, with a shared parent-controlled `defaultValues` state.
+  - [ ] Editing in either form in `/compare` syncs the JSON preview; the other form does *not* auto-update (demo shows independent engines, not shared state).
+  - [ ] Storybook play function `SchemaForm/SwitchingEngines` fills `email`, toggles engine, asserts email still present, no crash.
+  - [ ] a11y addon clean on the dashboard with the new `EngineToggle` control (has accessible label).
 - PR contents: `src/framework/engines/switcher.ts`, `src/demo/components/EngineToggle.tsx`, `src/demo/pages/Comparison.tsx`, new route in `App.tsx`, one new Storybook story.
 
 ### Phase 13 -- Advanced meta (v1.1)
@@ -942,7 +1065,14 @@ Skip this phase if the app is already on React 19 + MUI v9.
 - Implement `dependsOn` via a re-render hook that subscribes to specific paths.
 - Implement hidden/readonly behavior in `FieldRenderer`.
 - Add cookbook examples for each.
-- Exit gate: each new meta field has a dedicated Storybook story plus a unit test; cookbook entries green.
+- Acceptance criteria:
+  - [ ] `asyncValidate: 'checkEmail'` on a field meta triggers the registered validator with debouncing (300ms default); loading adornment shows on the input during the request.
+  - [ ] Async errors surface as `handle.errors[path]` identical to sync errors; submit is disabled while any async validation is in flight.
+  - [ ] `dependsOn: ['role']` on field `adminCode` re-renders that field when `values.role` changes; the field is hidden when `role !== 'admin'`.
+  - [ ] `hidden: true` on a field: the field is not rendered *and* its value is excluded from `onSubmit` payload if `clearOnHide: true`; otherwise the last value is preserved.
+  - [ ] `readOnly: true` renders the field's MUI control with `readOnly` / `InputProps: { readOnly: true }` such that values display but cannot change.
+  - [ ] Each of `asyncValidate`, `dependsOn`, `hidden`, `readOnly`, `clearOnHide` has a dedicated Storybook story demonstrating it and at least one unit test.
+  - [ ] Cookbook (`docs/schema-forms-cookbook.md`) has a new recipe for each of the five features, each recipe ≤ 40 lines.
 - PR contents: `core/types.ts` meta extension, `core/asyncValidators.ts` registry, `renderer/FieldRenderer.tsx` hidden/readonly handling, `hooks/useDependentFields.ts`, four new Storybook stories, four new cookbook sections. This phase can optionally be split into 13a (hidden/readonly) and 13b (async + dependsOn) if the diff exceeds 500 lines.
 
 ### Tracking and visibility
