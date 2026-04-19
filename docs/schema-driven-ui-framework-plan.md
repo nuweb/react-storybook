@@ -765,11 +765,181 @@ This is the complete plan. Execution follows the phases in Section 13; every pha
 
 ---
 
-## Appendix A -- Packaging as an Nx Library
+## Appendix A -- Simplicity Review and Junior-Dev Quickstart
+
+This plan optimizes for a capability ceiling that the request describes (two engines, registry, compiled IR, mid-edit engine switching). Not every ceiling needs to be in v1, and not every concept needs to be visible to a junior dev at the call-site. This appendix calls out where the design was over-built, trims the v1 scope, and codifies the API shape a new developer should actually see.
+
+### A.1 Is this over-engineered?
+
+Honestly, yes -- in specific places:
+
+| Concept in plan | Verdict | Recommendation |
+|---|---|---|
+| Two form engines + parity contract tests | **Defer.** Requested, but ~40% of the code and the main complexity source. | Ship **TanStack only in v1**. Keep the `FormEngine` interface as the seam, but don't build the RHF adapter or engine-switcher until a real app asks for it. The demo "engine comparison" tab becomes a v1.1 story. |
+| `useEngineSwitcher` with mid-edit value preservation | **Defer.** Demo-only concern; production apps pick an engine and stay. | Move to v1.1 alongside the RHF adapter. Not in public API for v1. |
+| `FormHandle.capabilities` probe | **Cut.** With one engine shipped, capabilities is dead code. | Re-introduce when the second adapter lands. |
+| Dynamic `import()` of engines for code-splitting | **Cut.** Premature optimization. One engine means nothing to split. | Plain static imports. |
+| Static `dependsOn` graph + cycle detection at compile time | **Cut for v1.** Real cycles are rare; runtime recursion guard is enough. | Simple `<form.Subscribe>`-style re-render when referenced paths change. |
+| Max-depth compile error (`depth > 5`) | **Keep but simplify.** It's a few lines and it prevents a confusing failure mode. | Throw a plain `Error` with the offending path; skip the custom `CompileError` class. |
+| Granular `exports` map, no barrels | **Keep.** Tree-shaking matters even in v1. | No change. |
+| Compiled IR (`FormSpec`) | **Keep, but hide.** It is the thing that makes engine-agnosticism actually work. | Keep it internal. No consumer code imports `FormSpec`; they pass a Zod schema and get a form. |
+| Field registry | **Keep.** This is the extension point juniors and seniors both need. | Ship a narrow default registry (10 field types). Override via one prop. |
+| Layout DSL (`LayoutNode`) with rows/sections/dividers | **Keep, but make optional.** 95% of forms need no layout authoring -- just `col` per field. | Default layout = one row per field, responsive from `col`. Only authors who want sections or custom grids reach for `LayoutNode`. |
+| `ui()` meta with `autoComplete`, `hidden`, `readOnly`, `componentProps`, etc. | **Keep, but start small.** Ship the minimum first; extend on demand. | v1 meta = `type`, `label`, `helperText`, `placeholder`, `options`, `col`. Add the rest as real schemas request them. |
+
+Net effect: v1 is roughly the plan minus the RHF adapter, the switcher, the capability probe, dynamic imports, and the static dependency-graph analyzer. The public API and folder layout stay the same so v1.1 is additive.
+
+### A.2 The API a junior dev sees
+
+Two touchpoints, that's it.
+
+**(1) Authoring a schema.** Same Zod they already use, with one extra helper:
+
+```ts
+// libs/shared/data-access/schemas/signup.ts
+import { z } from 'zod'
+import { ui } from '@ibc/schema-forms'
+
+export const SignupSchema = z.object({
+  email:    ui(z.string().email(),            { label: 'Email',   col: { xs: 12, md: 6 } }),
+  password: ui(z.string().min(8),             { label: 'Password', col: { xs: 12, md: 6 } }),
+  role:     ui(z.enum(['admin', 'member']),   { label: 'Role' }),   // select inferred
+  terms:    ui(z.literal(true),               { label: 'I accept the terms' }),
+})
+```
+
+Notice what is *not* required: no `type:` (inferred from the Zod node in 90% of cases), no layout, no registry. A junior writes Zod + labels and the form works.
+
+**(2) Rendering a form.** One component:
+
+```tsx
+// apps/shell/src/pages/SignupPage.tsx
+import { SchemaForm } from '@ibc/schema-forms'
+import { SignupSchema } from '@ibc/shared/data-access/schemas/signup'
+
+export function SignupPage() {
+  return (
+    <SchemaForm
+      schema={SignupSchema}
+      onSubmit={async (values) => await api.signup(values)}
+    />
+  )
+}
+```
+
+That's the end of the mandatory surface area. `SchemaForm` handles submit, reset, validation, error display, and layout. A junior shipping a form knows exactly these two things.
+
+### A.3 Progressive disclosure (when they need more)
+
+Advanced knobs exist but stay opt-in. A junior only meets them when the task actually calls for it:
+
+| Need | Additional concept | Example |
+|---|---|---|
+| Custom input look for one field | `componentProps` passthrough | `ui(z.string(), { label: 'Bio', componentProps: { multiline: true, rows: 4 } })` |
+| Brand your own Input across the app | Registry override | `<SchemaForm registry={defaultRegistry.extend({ text: OurInput })} … />` |
+| Two fields side-by-side on desktop | `col` per field | `col: { xs: 12, md: 6 }` |
+| Sections, dividers, or custom grouping | Author a `LayoutNode` | Covered in Section 6.1; not needed for typical forms |
+| Async uniqueness check | `asyncValidate` in meta | `ui(z.string().email(), { label: 'Email', asyncValidate: 'checkEmail' })` |
+| Conditional field | `dependsOn` + Zod `discriminatedUnion` | Covered in Section 10.2's billing example |
+| Array of repeating items | Nothing extra -- `z.array(z.object(…))` just works | `ArrayField` handles it by default |
+
+Each of these is a single prop or a single line of meta. The mental model never requires a junior to know there is an IR, an engine adapter, or a registry lookup happening.
+
+### A.4 The 80% form -- from zero to screen
+
+This is the literal recipe a junior gets in the README. It should fit on one screen.
+
+```tsx
+// 1. Define the schema
+import { z } from 'zod'
+import { ui } from '@ibc/schema-forms'
+
+export const ContactSchema = z.object({
+  name:    ui(z.string().min(1),       { label: 'Name' }),
+  email:   ui(z.string().email(),      { label: 'Email' }),
+  message: ui(z.string().min(10),      { label: 'Message', componentProps: { multiline: true, rows: 4 } }),
+})
+
+// 2. Render it
+import { SchemaForm } from '@ibc/schema-forms'
+
+export function ContactPage() {
+  return <SchemaForm schema={ContactSchema} onSubmit={send} />
+}
+
+async function send(values: z.infer<typeof ContactSchema>) {
+  await fetch('/api/contact', { method: 'POST', body: JSON.stringify(values) })
+}
+```
+
+Three imports. One schema. One component. Types flow from the schema to `send()` automatically. Validation, error display, submit handling, and accessibility are all included.
+
+### A.5 What a junior will hit first, and how the library handles it
+
+| First surprise | How the library responds |
+|---|---|
+| Forgot to add `ui(...)` wrapper | Field still renders with type inferred from Zod + label derived from the field name (camel→Title Case). `console.warn` in dev tells them the convention. |
+| Used a `type` the registry doesn't know | `FallbackField` renders a visible warning Alert + a plain text input; the form still submits. Not a crash. |
+| Typo in `col` breakpoint key | TypeScript catches it (`col: { xs, sm, md, lg, xl }` is a typed interface). |
+| Wants to test the form | `renderWithProviders` from `@ibc/schema-forms/testing` wraps with MUI theme + QueryClient; they import it and their test works. |
+| Needs to reset after submit | `<SchemaForm resetOnSuccess />` one-prop behavior. |
+| Needs a custom submit button | `<SchemaForm actions={<MyActions />} />` children slot. |
+| Wants to prefill from URL / server | `defaultValues={{ email: session.email }}` prop. |
+
+The library owns the graceful-degradation edge cases so the junior doesn't have to think about them.
+
+### A.6 Documentation we commit to shipping for juniors
+
+Docs are not a nice-to-have; for a framework with this much abstraction, they are the actual UX. As part of v1:
+
+- `docs/schema-forms-quickstart.md` -- the recipe in Section B.4, expanded to ~200 lines with "add a field", "add validation", "add async validation", "style one field", "test a form".
+- `docs/schema-forms-cookbook.md` -- 6-8 copy-paste examples: contact form, signup, profile, nested address, repeating line items, conditional billing form, async email check, multi-step-lite (two `SchemaForm` instances).
+- Inline JSDoc on `ui()`, `SchemaForm`, and each default field component, with one example each. Shows up on hover in VS Code.
+- Storybook `Docs` tab for every default field with props table + "Try it" controls.
+- Storybook MCP integration (already in this repo per `AGENTS.md`) means a junior's AI assistant can call `get-documentation` before using any field.
+
+### A.7 Revised v1 scope
+
+Taking the trims above, v1 ships:
+
+- Core: `compile()`, `ui()`, `FieldRegistry`, `FallbackField`, errors.
+- Engine: **TanStack Form only**. `FormEngine` interface present; second adapter deferred.
+- Renderer: `SchemaForm`, `LayoutRenderer` (default layout for 95% of forms), `FieldRenderer`.
+- Fields: `TextField`, `NumberField`, `SelectField`, `CheckboxField`, `SwitchField`, `RadioGroupField`, `DateField`, `TextareaField`, `ObjectField`, `ArrayField`.
+- Meta: `type`, `label`, `helperText`, `placeholder`, `options`, `col`, `componentProps`.
+- Demo: one dashboard page with four schemas, a `StatePreview` JSON panel, and a `ValidationPanel`. **No engine toggle in v1.**
+- Docs: quickstart + cookbook + JSDoc + Storybook autodocs.
+- Nx packaging per Appendix B.
+
+v1.1 (when a real user need appears):
+
+- RHF adapter + `FormEngine` capability probe.
+- `useEngineSwitcher` and engine-toggle in demo.
+- `asyncValidate`, `dependsOn` full graph analysis, `hidden`, `readOnly`, `clearOnHide`.
+- Dynamic `import()` engine splitting if bundle analysis shows it matters.
+
+This shaves the plan by roughly a third while keeping every promise to the consumer intact. Most importantly, **the API a junior dev sees in v1 is the same API they see in v1.1** -- their call-sites do not change when we add the second engine, because the engine choice is an optional prop that defaults to `tanstack`.
+
+### A.8 Sanity checks before we call v1 "junior-friendly"
+
+Run these before shipping:
+
+- [ ] A junior who has never seen the library can build the contact form in Section B.4 in under 10 minutes with only the quickstart open.
+- [ ] Their schema has **no `type`** properties -- inference covers every field they used.
+- [ ] They never import from `@ibc/schema-forms/core`, `@ibc/schema-forms/engines/*`, or any internal path. Default surface is enough.
+- [ ] Every default field has a Storybook page with working Controls they can copy args from.
+- [ ] When they break the schema (e.g. pass an unsupported Zod combinator), the dev-mode error names the field and tells them what to do.
+- [ ] The public TypeScript surface of `@ibc/schema-forms` has fewer than 20 exported names. (IR types, engine types, and internal helpers are not exported.)
+
+If any of those fails, the abstraction leaked and needs sanding before release.
+
+---
+
+## Appendix B -- Packaging as an Nx Library
 
 Short answer: **yes**, and by design. The folder layout in Section 3 was chosen so that promotion into an Nx workspace is a move + config operation, not a rewrite. This appendix specifies exactly how.
 
-### A.1 Target monorepo layout
+### B.1 Target monorepo layout
 
 Assuming the enterprise layout from `.cursor/skills/frontend-architecture/SKILL.md` (scope-first, type-tagged):
 
@@ -807,7 +977,7 @@ libs/
 
 The library name is `@ibc/schema-forms` (tag it `type:ui, scope:shared`). It depends on `@ibc/tokens` (for the MUI theme bridge) and peer-depends on `react`, `@mui/material`, `zod`, and optionally `@tanstack/react-form` / `react-hook-form`. Consumer apps install whichever engine(s) they use.
 
-### A.2 Generate the library
+### B.2 Generate the library
 
 ```bash
 # Scaffold a buildable React library inside the scope-first tree
@@ -828,7 +998,7 @@ Flags that matter:
 - `--component=false` suppresses the default `<SchemaForms>` stub -- the framework exposes `<SchemaForm>` from its own folder.
 - `--tags` are enforced by `@nx/enforce-module-boundaries` so apps can import the library only when their scope permits.
 
-### A.3 `project.json` targets
+### B.3 `project.json` targets
 
 ```jsonc
 {
@@ -865,7 +1035,7 @@ Flags that matter:
 }
 ```
 
-### A.4 `package.json` exports (granular, no barrels)
+### B.4 `package.json` exports (granular, no barrels)
 
 Per Section 1 of the architecture skill, expose specific entry points instead of a single barrel. This keeps tree-shaking intact even though the library ships both engines and the full default field set:
 
@@ -911,7 +1081,7 @@ import { MyBrandedTextField } from '@ibc/schema-forms/fields'
 
 The two engines are behind their own subpath exports so if an app only installs `@tanstack/react-form` it never pulls `react-hook-form` into its bundle, and vice versa. The `peerDependenciesMeta` block marks both engines optional so `npm install @ibc/schema-forms` does not warn when only one is installed.
 
-### A.5 Module boundary tags
+### B.5 Module boundary tags
 
 Add these constraints to `eslint.config.mjs` (the skill already defines the structure; `schema-forms` slots in under `type:ui, scope:shared`):
 
@@ -926,7 +1096,7 @@ Consequences:
 - Apps of any scope may depend on it, because apps have `type:app` which dep-constraints allow to consume shared `type:ui` libs.
 - `@ibc/schema-forms` may import `@ibc/ui` (the atomic design system) if you want shared atoms as the fallback for custom field components. Keep that dep one-way and optional.
 
-### A.6 Library-scoped Storybook
+### B.6 Library-scoped Storybook
 
 Each library gets its own Storybook instance (the skill endorses Storybook composition across the monorepo):
 
@@ -947,7 +1117,7 @@ nx run ibc-schema-forms:test          # vitest watch
 nx run ibc-schema-forms:build         # emit dist/
 ```
 
-### A.7 Publishable vs. buildable
+### B.7 Publishable vs. buildable
 
 Pick one up front; switching later is a small config change but noisy in git.
 
@@ -958,7 +1128,7 @@ Pick one up front; switching later is a small config change but noisy in git.
 
 Start buildable. If a second repo needs it, promote to publishable with `nx g @nx/react:library ... --publishable --importPath=@ibc/schema-forms` applied as a patch to `package.json` + add `nx release` config.
 
-### A.8 Consumer wiring (app side)
+### B.8 Consumer wiring (app side)
 
 In the consuming app (`apps/shell`), installation is transparent because Nx links the workspace package:
 
@@ -980,7 +1150,7 @@ export function SignupPage() {
 
 `@ibc/shared/data-access` hosts the Zod schemas that back both forms (via `@ibc/schema-forms`) and API response validation (via `@ibc/shared/data-access`). Section 8 of the skill already enforces this "one schema, shared for form + API" pattern; `schema-forms` just consumes whatever schemas live there.
 
-### A.9 Affected graph
+### B.9 Affected graph
 
 Because the library is a first-class Nx project, the affected graph reacts correctly:
 
@@ -988,7 +1158,7 @@ Because the library is a first-class Nx project, the affected graph reacts corre
 - `nx affected -t lint test build` in CI runs only those projects.
 - `nx graph` renders `ibc-schema-forms` as a node with edges to `ibc-tokens`, `shared-data-access`, and downstream consumers.
 
-### A.10 Migration from the single-package scaffold
+### B.10 Migration from the single-package scaffold
 
 If Phase 0-8 of Section 13 have already been executed in the current single-package repo and you later want to promote the code into an Nx monorepo:
 
@@ -1005,7 +1175,7 @@ If Phase 0-8 of Section 13 have already been executed in the current single-pack
 
 Because the single-package scaffold mirrors the lib's internal folder layout (core/engines/renderer/fields/hooks/testing), step 3 is a `git mv` tree, not a rewrite. No import paths above the `framework/` boundary need to change: `@/framework/*` becomes `@ibc/schema-forms`.
 
-### A.11 Acceptance checklist for the Nx packaging
+### B.11 Acceptance checklist for the Nx packaging
 
 - [ ] `nx build ibc-schema-forms` emits a tree-shakeable ESM dist with `.d.ts` files.
 - [ ] `nx test ibc-schema-forms` runs unit + engine-parity contract tests green.
