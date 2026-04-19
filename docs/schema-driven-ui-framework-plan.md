@@ -1,6 +1,6 @@
 # Schema-Driven UI Framework -- Implementation Plan
 
-A production-ready plan for a **form-library-agnostic, schema-driven UI framework** that renders dynamic forms from Zod schemas with pluggable form engines (TanStack Form primary, React Hook Form secondary), built on React 18 + MUI v6 and aligned with the enterprise frontend architecture defined in `.cursor/skills/frontend-architecture/SKILL.md`.
+A production-ready plan for a **form-library-agnostic, schema-driven UI framework** that renders dynamic forms from Zod schemas with pluggable form engines (TanStack Form primary, React Hook Form secondary), built on **React 19 + MUI v9** and aligned with the enterprise frontend architecture defined in `.cursor/skills/frontend-architecture/SKILL.md`. Downlevel v6/v7 + React 18 consumers are supported via peer-dep ranges (see Appendix C).
 
 This document is the blueprint. It is intentionally detailed enough that an engineer or cloud agent can execute it without re-deriving architecture decisions.
 
@@ -552,16 +552,20 @@ Place each in `src/framework/contracts/`:
 
 ## 11. Dependencies to Add
 
+Targeting **React 19 + MUI v9** for v1 (see Appendix C for the rationale):
+
 ```
+react                           ^19       # React 19 + React Compiler
+react-dom                       ^19
+@mui/material                   ^9        # MUI v9 (Apr 2026)
+@mui/icons-material             ^9
+@emotion/react @emotion/styled  ^11       # optional in v9+; required on v6/v7
 @tanstack/react-form            ^1        # primary engine
 @tanstack/zod-form-adapter      ^0.4+     # Zod bridge
-react-hook-form                 ^7        # secondary engine
-@hookform/resolvers             ^3
-zod                             ^3
-@mui/material                   ^6
-@mui/icons-material             ^6
-@emotion/react @emotion/styled  ^11       # peer deps of MUI
-motion                          ^11       # crossfade on engine switch
+react-hook-form                 ^7        # secondary engine (v1.1)
+@hookform/resolvers             ^3        # v1.1
+zod                             ^3        # stay on v3 for v1; v4 tracked
+motion                          ^11       # crossfade on engine switch (v1.1)
 ```
 
 Dev-only:
@@ -625,11 +629,14 @@ Cover the demo dashboard: pick schema → fill fields → validation states → 
 
 Execution is broken into small, sequential phases. Each phase is sized to fit in a single PR, ends with a runnable artifact, and has a clear entry gate (what must be true before starting) and exit gate (what must be true before merging). Phases in **v1** are required; phases marked **v1.1** are deferred per the simplicity review in Appendix A.
 
+**Stack target:** React 19 + MUI v9 + TanStack Form + Zod v3. See Appendix C for the rationale and the downlevel compatibility story.
+
 ### Map of phases
 
 | # | Phase | Release | Depends on | Rough size |
 |---|-------|---------|------------|------------|
-| 0 | Foundations (deps, theme, test runner) | v1 | -- | Small |
+| -1 | Consuming app upgrade to React 19 + MUI v9 | pre-v1 | -- | Small |
+| 0 | Foundations (deps, theme, test runner) | v1 | -1 | Small |
 | 1 | Core types + `ui()` helper | v1 | 0 | Small |
 | 2 | `compile()` (schema → FormSpec) | v1 | 1 | Medium |
 | 3 | Field registry + FallbackField | v1 | 1 | Small |
@@ -644,22 +651,41 @@ Execution is broken into small, sequential phases. Each phase is sized to fit in
 | 12 | Engine switcher + comparison page | **v1.1** | 11 | Small |
 | 13 | Advanced meta: `asyncValidate`, `dependsOn`, `hidden`, `readOnly` | **v1.1** | 6 | Medium |
 
-Phases 0-9 in order give a junior dev a shippable v1. Phase 10 (Nx promotion) can happen at any time from 9 onward.
+Phases 0-9 in order give a junior dev a shippable v1. Phase 10 (Nx promotion) can happen at any time from 9 onward. Phase -1 is the prerequisite upgrade work on the consuming app; skip it only if the app is already on React 19 + MUI v9.
+
+### Phase -1 -- Consuming app upgrade to React 19 + MUI v9
+
+*Outcome:* the repo is on React 19 + MUI v9 so the framework is built on the primary target from day one.
+
+- Entry gate: the existing app still runs on whatever version it's on.
+- Execute the checklist in Appendix C.5 exactly. In order:
+  1. Bump React: `npm install react@^19 react-dom@^19`. Address any `forwardRef`-deprecation warnings by moving to plain `ref` props.
+  2. Install React Compiler Babel plugin and wire into `vite.config.ts` per the skill's Section 16.
+  3. Bump MUI: `npm install @mui/material@^9 @mui/icons-material@^9 @mui/system@^9`.
+  4. Run the MUI codemod: `npx @mui/codemod@latest v9.0.0/preset-safe src/`.
+  5. Grep and fix remaining deprecations: `component=` / `componentsProps=` → `slots` + `slotProps`; deprecated system layout props on `<Box>` / `<Grid>` → `sx`; remove `disableEscapeKeyDown` from `Dialog` / `Modal`.
+  6. Ensure `createTheme({ cssVariables: true })` is active.
+  7. Remove any `MuiTouchRipple` theme overrides.
+- Exit gate: existing Storybook + a11y addon across every story is green; Vitest snapshots match or are intentionally updated; `npm run dev` and `npm run storybook` work on the new stack.
+- PR contents: `package.json` + lockfile diff, codemod output, hand-fixed deprecations, theme adjustments. No framework code yet.
+
+Skip this phase if the app is already on React 19 + MUI v9.
 
 ### Phase 0 -- Foundations
 
-*Outcome:* the repo is ready to build schema-driven forms.
+*Outcome:* the repo is ready to build schema-driven forms on top of React 19 + MUI v9.
 
-- Entry gate: the existing app still runs (`npm run dev`, `npm run storybook`).
-- Add dependencies from Section 11 (Zod, MUI, Emotion, TanStack Form + zod adapter, motion; dev: Vitest, jsdom, Testing Library, MSW).
+- Entry gate: Phase -1 merged, or the app is already on React 19 + MUI v9.
+- Add framework dependencies from Section 11 (Zod v3, TanStack Form + zod adapter; dev: Vitest, jsdom, Testing Library, MSW).
 - Configure Vitest with jsdom + `@testing-library/jest-dom` matchers. One smoke test file that imports React and asserts `1 + 1 === 2`.
-- Create `src/framework/tokens/mui-theme.ts` bridging `src/tokens/design-tokens.css` into `createTheme({ cssVariables: true })`.
+- Create `src/framework/tokens/mui-theme.ts` bridging `src/tokens/design-tokens.css` into `createTheme({ cssVariables: true, colorSchemes: { light, dark } })`.
 - Wrap `src/main.tsx` with `<ThemeProvider theme={theme}><CssBaseline />…</ThemeProvider>`.
 - Wrap Storybook via `.storybook/preview.ts` using `withThemeFromJSXProvider`.
 - Exit gate:
   - `npm test` runs and passes the smoke test.
   - `npm run dev` and `npm run storybook` still work.
   - MUI Button renders with tokens-derived palette in a throwaway story.
+  - `--mui-palette-*` CSS variables are present on `:root` (verifies `cssVariables: true` wired).
 - PR contents: `package.json` diff, `vitest.config.ts`, `src/framework/tokens/mui-theme.ts`, theme provider wiring, one smoke test, one temporary Storybook check.
 
 ### Phase 1 -- Core types and `ui()` helper
@@ -721,7 +747,7 @@ Phases 0-9 in order give a junior dev a shippable v1. Phase 10 (Nx promotion) ca
 - Entry gate: Phase 3 merged.
 - Build, one component per commit inside the phase PR if possible:
   - `TextField` (text, password, email -- variants via `type`)
-  - `NumberField`
+  - `NumberField` -- wraps MUI v9's Base UI `NumberField` primitive when available; falls back to `TextField type="number"` on v6/v7 (see Appendix C.5a)
   - `TextareaField`
   - `SelectField`
   - `CheckboxField`
@@ -901,11 +927,14 @@ Project managers can track v1 completion as "Phases 0-9 green". Phase 10 (Nx) is
 
 None blocking. Decisions assumed in this plan:
 
-- **Default engine = TanStack** (per user preference stated in the request).
-- **Zod v3** (v4 is not stable as of authoring; upgrade path is a one-line adapter change).
+- **Primary stack = React 19 + MUI v9 + TanStack Form + Zod v3.** Downlevel MUI v6/v7 + React 18 consumers supported via peer-dep ranges (Appendix C).
+- **Phase -1 upgrades the consuming app to React 19 + MUI v9** before Phase 0 of the framework build. Skip if already on that stack.
+- **Default form engine = TanStack** (per user preference).
+- **Zod v3** (v4 tracked; upgrade path is a one-line adapter change).
 - **MUI Grid v2** for layout.
 - **CSS Modules** are *not* used inside the framework (MUI theme + `sx`) but remain available for custom non-MUI field components per the architecture skill.
 - **No router integration** in the framework itself; the demo uses `react-router-dom` v7 already in the repo.
+- **React Compiler is on** (no manual `useMemo` / `useCallback` / `React.memo` inside the framework).
 
 ---
 
@@ -1371,9 +1400,27 @@ Because the single-package scaffold mirrors the lib's internal folder layout (co
 
 ---
 
-## Appendix C -- MUI v9 Compatibility and Upgrade Path
+## Appendix C -- MUI v9 as the v1 Target (React 19)
 
-Short answer: **yes, the design is compatible with MUI v9**, and the plan is structured so the upgrade from v6/v7 to v9 is a contained migration rather than a rewrite. This appendix covers what changes, what stays, and the concrete steps.
+Short answer: **yes, upgrade to MUI v9 first, then build the framework on top.** Because the consuming app is already on React 19, starting on v6/v7 would mean shipping v1 on a stack the app is about to move off of, then running a migration immediately. That is the worst of both worlds. MUI v9 is the correct v1 target; v6/v7 become *downlevel compatibility* targets, not the primary.
+
+This appendix replaces my earlier framing. The earlier draft assumed v1 shipped on v6 and upgraded later -- that assumption is wrong for a greenfield library on React 19.
+
+### C.0 Why v9 first on React 19
+
+Three concrete reasons the upgrade-first order is correct here:
+
+1. **React 19 + MUI v6/v7 is a supported but transitional pairing.** MUI v9 re-syncs its major with MUI X v9 and targets React 19 as the primary React line. The v9 release explicitly positions Base UI primitives (`NumberField`, `Menubar`) for adoption on React 19; v7 supports React 19 but carries deprecated props the v9 cycle removes.
+2. **React 19's Compiler (React Forget) is stable.** Writing the framework on React 19 means no manual `useMemo` / `useCallback` / `React.memo` in field components, in the engine adapters, or in the renderer. Starting on React 18 + MUI v6 and later migrating would mean two rounds of memoization cleanup.
+3. **`ref` is a regular prop in React 19.** Every field component in Phase 4 (and consumer-authored custom fields) can accept `ref?: React.Ref<HTMLElement>` directly without `forwardRef`. If we ship v1 on React 18, we ship `forwardRef` boilerplate that we strip out a month later. Doing it right the first time avoids a breaking API change for consumers who reach into refs.
+
+Starting on v9 also means we get the free wins immediately instead of as a migration:
+
+- `sx` prop 30% faster under heavy usage -- relevant because our layout renderer composes many `sx` values.
+- `cssVariables: true` with `color-mix()` derived colors -- used by our theme bridge from day one.
+- New Base UI `NumberField` primitive -- our default `NumberField` wraps it instead of a `TextField type="number"` workaround.
+- Improved Roving TabIndex on Stepper / Tabs / MenuList -- `SelectField` and `RadioGroupField` inherit the a11y improvements automatically.
+- ~3% smaller bundle vs. v7.
 
 ### C.1 What MUI v9 actually ships (the parts that touch this framework)
 
@@ -1407,26 +1454,26 @@ Three choices in Sections 5-7 make version churn absorbable:
 
 ### C.3 Version matrix
 
-Commit to supporting a window, not a point release:
+Commit to supporting a window, not a point release. Primary target is the leftmost column:
 
 | MUI line | React | Zod | TanStack Form | Framework status |
 |---|---|---|---|---|
-| v6.x | 18.x | 3.x | 0.x - 1.x | v1 ships here |
-| v7.x | 18.x or 19.x | 3.x | 1.x | Supported (minor audit) |
-| v9.x | 19.x | 3.x or 4.x | 1.x | **Supported via v1.1 minor**; adds optional `NumberField` Base UI backend |
+| **v9.x** | **19.x** | **3.x** (4.x tracked) | **1.x** | **v1 primary target.** Ships here. Uses Base UI `NumberField`, `cssVariables` + `color-mix()`, Roving TabIndex a11y wins. |
+| v7.x | 18.x or 19.x | 3.x | 1.x | **Downlevel supported** via peer-dep ranges. No new features; Base UI `NumberField` falls back to `TextField type="number"`. |
+| v6.x | 18.x | 3.x | 0.x - 1.x | Best-effort downlevel. Not tested in CI. |
 
-Skip v8 entirely -- MUI itself did (v7 → v9 to align with MUI X). The React 19 move coincides with MUI v9 and is addressed in Appendix D-like future work if and when the consuming apps are ready.
+v8 is skipped -- MUI itself did (v7 → v9 to align with MUI X). The React 18 → React 19 move is *already behind us* for the consuming app, so v1 targets React 19 as the primary React line.
 
-### C.4 Peer-dep declaration (forward-compatible)
+### C.4 Peer-dep declaration (primary = v9, downlevel tolerated)
 
-In `libs/ibc/schema-forms/package.json` (Appendix B.4), widen the MUI peer range so consumers can upgrade without our explicit release:
+In `libs/ibc/schema-forms/package.json` (Appendix B.4), widen ranges so downlevel v6/v7 consumers can still install, while the primary development and CI target is v9 + React 19:
 
 ```jsonc
 {
   "peerDependencies": {
-    "react":         ">=18.0.0 <20.0.0",
-    "react-dom":     ">=18.0.0 <20.0.0",
-    "@mui/material": ">=6.0.0 <10.0.0",
+    "react":            ">=18.0.0 <20.0.0",
+    "react-dom":        ">=18.0.0 <20.0.0",
+    "@mui/material":    ">=6.0.0 <10.0.0",
     "@emotion/react":   ">=11.0.0 <13.0.0",
     "@emotion/styled":  ">=11.0.0 <13.0.0",
     "zod":              ">=3.22.0 <5.0.0"
@@ -1434,31 +1481,61 @@ In `libs/ibc/schema-forms/package.json` (Appendix B.4), widen the MUI peer range
   "peerDependenciesMeta": {
     "@emotion/react":   { "optional": true },
     "@emotion/styled":  { "optional": true },
-    "@tanstack/react-form":    { "optional": true },
+    "@tanstack/react-form":       { "optional": true },
     "@tanstack/zod-form-adapter": { "optional": true },
-    "react-hook-form": { "optional": true },
-    "@hookform/resolvers": { "optional": true }
+    "react-hook-form":            { "optional": true },
+    "@hookform/resolvers":        { "optional": true }
   }
 }
 ```
 
-Emotion is *optional* in the v9+ world (MUI has signaled it will remove the hard dependency), so we mark it optional now. On v6/v7 installs, npm will warn if it's missing; that's the correct behavior because on v6/v7 Emotion is still required.
+Emotion is optional in the v9+ world (MUI has signaled it will remove the hard dependency in a post-v9 minor). On v6/v7 installs npm will warn if it's missing -- that is the correct behavior because on v6/v7 Emotion is still required.
 
-### C.5 What to audit when v9 upgrade happens (checklist)
+**Dev dependencies in the library** resolve to the primary line so we develop, test, and build Storybook against v9 + React 19:
 
-Treat the upgrade as a single PR guarded by the existing test suite (unit + Storybook play functions + a11y addon):
+```jsonc
+{
+  "devDependencies": {
+    "react":            "^19.0.0",
+    "react-dom":        "^19.0.0",
+    "@mui/material":    "^9.0.0",
+    "@mui/icons-material": "^9.0.0"
+  }
+}
+```
 
-- [ ] Bump `@mui/material`, `@mui/system`, `@mui/icons-material` to v9.
-- [ ] Run MUI's codemods: `npx @mui/codemod@latest v9.0.0/preset-safe src/framework/fields`.
-- [ ] Grep `src/framework/fields/**` for `component=`, `componentsProps=` -- replace with `slots` + `slotProps`. These should already be absent if Phase 4 was implemented to the skill.
-- [ ] Grep `src/framework/**` for deprecated system layout props (`display=`, `alignItems=`, `justifyContent=`, etc. applied directly to `<Box>` / `<Grid>`). Move to `sx`.
-- [ ] Check `tokens/mui-theme.ts` for any `MuiTouchRipple` theme overrides -- remove (removed from theme types in v9).
-- [ ] Re-run Storybook + a11y addon across the full story set. Zero new violations.
-- [ ] Re-run Vitest unit tests. All snapshots still match or are intentionally updated.
-- [ ] (v9-only enhancement, optional) Refactor `NumberField/NumberField.tsx` to wrap MUI's new `NumberField` primitive. Behind a feature flag or behind a `peerDependencies` check -- ship only when the consumer is on v9+.
-- [ ] Update `docs/schema-forms-quickstart.md` install command if Emotion drop has happened.
+### C.5 Pre-Phase 0 upgrade of the consuming app to MUI v9
 
-If the checklist is green, the upgrade is done. Expected size: a few files + a codemod pass, not a redesign.
+Because v1 targets React 19 + MUI v9, if the app is not already on MUI v9 we do that upgrade **before Phase 0** of Section 13. It is a one-PR operation and it unblocks the entire schema-forms plan.
+
+Order of operations (treat as a Phase -1):
+
+- [ ] Bump the app: `npm install @mui/material@^9 @mui/icons-material@^9 @mui/system@^9`.
+- [ ] Run MUI's codemod preset across the app: `npx @mui/codemod@latest v9.0.0/preset-safe src/`.
+- [ ] Grep `src/**` for `component=` / `componentsProps=` on MUI components -- replace with `slots` + `slotProps`.
+- [ ] Grep `src/**` for deprecated system layout props applied directly to `<Box>` / `<Grid>` (`display=`, `alignItems=`, `justifyContent=`, etc.). Move to `sx`.
+- [ ] Remove `disableEscapeKeyDown` from any `Dialog` / `Modal` usage; implement equivalent via keyboard handling if needed.
+- [ ] Audit the MUI theme file: remove any `MuiTouchRipple` theme overrides (the component type is gone in v9).
+- [ ] Ensure `createTheme({ cssVariables: true })` is enabled so derived `color-mix()` colors work.
+- [ ] Run the existing Storybook + a11y addon across every story. Zero new violations.
+- [ ] Run Vitest. All snapshots match or are intentionally updated.
+- [ ] Bump React to 19 if not already there (`react@^19 react-dom@^19`). React 19 types are stricter; address `forwardRef`-deprecation warnings by moving to plain `ref` props.
+- [ ] Install the React Compiler Babel plugin per the skill's Section 16: `npm install -D babel-plugin-react-compiler` and wire into `vite.config.ts`.
+
+Expected size: a few files + a codemod pass, not a redesign. The existing tests are the safety net.
+
+### C.5a Downlevel compatibility surface (v6/v7 + React 18 consumers)
+
+If a downstream consumer is stuck on v6/v7 + React 18, the library still installs (peer ranges are wide), but three things are conditional:
+
+| Feature | On v9 + React 19 | On v6/v7 + React 18 |
+|---|---|---|
+| Default `NumberField` | Wraps MUI v9's Base UI `NumberField` | Falls back to `TextField type="number"` |
+| `cssVariables: true` + `color-mix()` derived colors | Native | Polyfilled via CSS custom properties, no `color-mix()` derived hues |
+| `ref` in field components | Regular prop | Still a regular prop (no `forwardRef` wrapper needed at consumer) |
+| React Compiler memoization | Active | Inactive; consumer code runs un-optimized memoization |
+
+The field wrapper in `fields/NumberField/NumberField.tsx` selects the implementation at import time via a dynamic check on the installed `@mui/material` version (read from `@mui/material/version` or fall back to feature detection). No consumer code changes to benefit from the v9 path.
 
 ### C.6 Where the plan would have to change if MUI v9 had been a bigger break
 
@@ -1473,7 +1550,9 @@ The design absorbs MUI v9 because the v9 release is evolutionary. If a future ma
 
 ### C.7 Summary
 
-- **v1 ships on MUI v6 (or v7).** Works unchanged on v9 after a small audit + codemod PR.
-- **The framework's public API does not change with MUI version.** Consumers' call-sites are isolated by our field wrappers.
-- **Upgrading is one PR, not a project.** Peer ranges are wide, Emotion is optional, and the test suite catches regressions.
-- **v9-only goodies (NumberField Base UI primitive, improved Roving TabIndex) land automatically or behind a tiny optional refactor.**
+- **v1 targets MUI v9 + React 19.** This is the correct primary when the consuming app is already on React 19.
+- **Upgrade the app to MUI v9 as Phase -1**, before the framework's Phase 0. Single PR, guarded by the existing test suite.
+- **v6/v7 consumers still install and run** via wide peer ranges; the `NumberField` wrapper transparently falls back to `TextField type="number"`.
+- **The framework's public API does not change with MUI version.** Consumers' call-sites are isolated by our field wrappers, so downstream projects on older MUI still get the same `SchemaForm` API.
+- **React 19 wins land automatically**: React Compiler memoization, `ref` as a regular prop, `use()` hook available for async resources.
+- **MUI v9 wins land automatically**: Base UI `NumberField`, `color-mix()` derived colors, 30% faster `sx`, improved Roving TabIndex on Select/Radio/Stepper/Tabs.
